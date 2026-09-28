@@ -6,6 +6,13 @@ Command line for Morpheus.
   python -m morpheus exam   [--model ...]
   python -m morpheus export [--ckpt out-morpheus/morpheus.pt] [--scheme int4]
   python -m morpheus stats  [--size nano | --model ...]
+
+Growing on a device (numpy only, e.g. Termux on Android):
+  python -m morpheus learn     [--force] [--online] [--steps 200]
+  python -m morpheus teach     "what is the capital of france?" "paris is the capital of france."
+  python -m morpheus settings  [allow_internet on]
+  python -m morpheus status
+  python -m morpheus undo
 """
 
 import argparse
@@ -13,6 +20,7 @@ import os
 import sys
 
 from . import tokenizer
+from .curriculum import UNKNOWN_ANSWER
 
 DEFAULT_DIR = "out-morpheus"
 
@@ -63,13 +71,17 @@ class NumpyBrain:
 
 
 def find_model(path):
+    """An explicit path, else the brain grown on this device, else a freshly trained one,
+    else the brain that ships with the repository."""
     if path:
         return path
-    for name in ("morpheus.morph", "morpheus.pt"):
-        candidate = os.path.join(DEFAULT_DIR, name)
+    from .learn import HOME, SHIPPED_BRAIN
+    candidates = [os.path.join(HOME, "brain.morph"), os.path.join(DEFAULT_DIR, "morpheus.morph"),
+                  os.path.join(DEFAULT_DIR, "morpheus.pt"), SHIPPED_BRAIN]
+    for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
-    sys.exit(f"no trained Morpheus found in {DEFAULT_DIR}/. Raise one first:  python -m morpheus train")
+    sys.exit("no trained Morpheus found. Raise one first:  python -m morpheus train")
 
 
 def load_brain(path, device="cpu"):
@@ -86,54 +98,133 @@ def cmd_train(args):
     train(args)
 
 
-class Conversation:
-    """Keeps recent turns as context, dropping the oldest ones when the context is full."""
-
-    def __init__(self, brain, reserve=64, temperature=0.0, top_k=None):
-        self.brain = brain
-        self.reserve = reserve  # characters kept free for the answer
-        self.temperature, self.top_k = temperature, top_k
-        self.turns = []
-
-    def ask(self, message):
-        message = tokenizer.normalize(message).lower().strip()
-        turn = f"user: {message}\nmorpheus: "
-        budget = self.brain.block_size - self.reserve
-        while self.turns and len(tokenizer.NEWLINE + tokenizer.NEWLINE.join(self.turns + [turn])) > budget:
-            self.turns.pop(0)
-        context = (tokenizer.NEWLINE + tokenizer.NEWLINE.join(self.turns + [turn]))[-budget:]
-        reply = self.brain.generate(context, self.brain.block_size - len(context), self.temperature, self.top_k)
-        self.turns.append(turn + reply)
-        return reply
-
-
 def cmd_chat(args):
+    from .assistant import Assistant, Conversation, run
+    from .learn import Home
     brain, path = load_brain(args.model, args.device)
-    chat = Conversation(brain, temperature=args.temperature, top_k=args.top_k)
+    if args.brain_only:
+        chat = Conversation(brain, temperature=args.temperature, top_k=args.top_k)
+        respond = chat.ask
+    else:
+        respond = Assistant(brain, Home(args.home), temperature=args.temperature, top_k=args.top_k).respond
     if args.ask:
-        print(chat.ask(args.ask))
+        print(respond(args.ask))
         return
-    print(f"Morpheus is awake ({path}). Type 'bye' to leave, '/reset' to start over.\n")
+
+    def listen():
+        if args.voice:
+            print("you> (listening...)")
+            heard = run(["termux-speech-to-text"], timeout=60)
+            if heard is None:
+                raise EOFError("voice needs Termux:API (pkg install termux-api)")
+            heard = heard.strip().splitlines()[-1] if heard.strip() else ""
+            print(f"you> {heard}")
+            return heard
+        return input("you> ")
+
+    def say(reply):
+        print(f"morpheus> {reply}\n")
+        if args.voice or args.speak:
+            run(["termux-tts-speak", reply], timeout=120)
+
+    print(f"Morpheus is awake ({path}).\n"
+          "Type 'bye' to leave, '/reset' to start over, '/teach question = answer' to teach, 'help' for skills.\n")
     while True:
         try:
-            message = input("you> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+            message = listen().strip()
+        except (EOFError, KeyboardInterrupt) as e:
+            print(f"\n{e}" if str(e) else "")
             break
         if not message:
             continue
         if message == "/reset":
-            chat.turns.clear()
+            if args.brain_only:
+                chat.turns.clear()
             print("(forgotten)\n")
             continue
-        print(f"morpheus> {chat.ask(message)}\n")
+        if message.startswith("/teach"):
+            teach_from_chat(message[len("/teach"):], args.home)
+            continue
+        reply = respond(message)
+        say(reply)
+        if reply == UNKNOWN_ANSWER:
+            print(f"(teach me:  /teach {tokenizer.normalize(message).lower().strip()} = <the answer>)\n")
         if message.lower().strip("!. ") in ("bye", "goodbye", "good night", "quit", "exit"):
             break
 
 
+def teach_from_chat(text, home):
+    from .learn import Home
+    if "=" not in text:
+        print("(usage: /teach what is the capital of france? = paris is the capital of france.)\n")
+        return
+    question, answer = (part.strip() for part in text.split("=", 1))
+    try:
+        q, a = Home(home).teach(question, answer)
+    except ValueError as e:
+        print(f"({e})\n")
+        return
+    print(f"(noted: {q!r} -> {a!r}. I will study it in my next learning session: "
+          "python -m morpheus learn)\n")
+
+
+def cmd_learn(args):
+    from .learn import Home, session
+    home = Home(args.home)
+    log = (lambda *a, **k: None) if args.quiet else print
+    summary = session(home, steps=args.steps, force=args.force, online=True if args.online else None, log=log)
+    if args.quiet and "skipped" not in summary:
+        verdict = "kept" if summary["kept"] else "rolled back"
+        print(f"{summary['when']} {verdict}: exam {summary['exam_before'] * 100:.1f}% -> "
+              f"{summary['exam_after'] * 100:.1f}%, {summary['new_sources']} new source(s), {summary['seconds']}s")
+
+
+def cmd_teach(args):
+    from .learn import Home
+    q, a = Home(args.home).teach(args.question, args.answer)
+    print(f"noted: {q!r} -> {a!r}  (studied in the next learning session)")
+
+
+def cmd_settings(args):
+    from .learn import Home
+    home = Home(args.home)
+    if args.key and args.value is not None:
+        value = home.set(args.key, args.value)
+        print(f"{args.key} = {value!r}")
+        return
+    for key, value in home.settings.items():
+        if not args.key or key == args.key:
+            print(f"{key:>20} = {value!r}")
+
+
+def cmd_status(args):
+    from .learn import Home, power_status
+    home = Home(args.home)
+    brain = home.brain_source()
+    charging, percent = power_status()
+    j = home.journal
+    print(f"home: {home.path}")
+    print(f"brain: {brain or 'none yet'}")
+    print(f"internet: {'allowed' if home.settings['allow_internet'] else 'not allowed'}; "
+          f"power: {'charging' if charging else 'on battery' if charging is False else 'unknown'}"
+          + (f" ({percent}%)" if percent is not None else ""))
+    print(f"library: {len(j['seen'])} source(s), {sum(v['chars'] for v in j['seen'].values()):,} chars; "
+          f"taught facts: {len(home.taught())}")
+    for s in j["sessions"][-5:]:
+        verdict = "kept" if s["kept"] else "rolled back"
+        print(f"  {s['when']}  {verdict:<11} exam {s['exam_before'] * 100:.1f}% -> {s['exam_after'] * 100:.1f}%"
+              f"  {s['steps']} steps, {s['seconds']}s")
+
+
+def cmd_undo(args):
+    from .learn import Home
+    restored = Home(args.home).undo()
+    print("restored the previous brain" if restored else "nothing to undo")
+
+
 def cmd_exam(args):
     from .curriculum import STAGES
-    from .train import report_card, print_report_card
+    from .school import report_card, print_report_card
     brain, path = load_brain(args.model, args.device)
     stages = [s for s in STAGES if args.stages == "all" or s.name in args.stages.split(",")]
     rows = report_card(brain.predict, stages, brain.block_size, n=args.n, seed=args.seed)
@@ -153,7 +244,7 @@ def cmd_export(args):
     if args.grade:
         from .curriculum import STAGES
         from .runtime import NumpyMorpheus
-        from .train import report_card, print_report_card
+        from .school import report_card, print_report_card
         brain = NumpyMorpheus(*load(out))
         print_report_card(report_card(brain.predict, STAGES, brain.cfg["block_size"]), f"after {args.scheme}")
 
@@ -219,6 +310,9 @@ def main(argv=None):
     c.add_argument("--temperature", type=float, default=0.0, help="0 = always the most likely answer")
     c.add_argument("--top_k", type=int, default=None)
     c.add_argument("--device", default="cpu")
+    c.add_argument("--voice", action="store_true", help="listen and speak (Android, Termux:API)")
+    c.add_argument("--speak", action="store_true", help="speak replies aloud (Android, Termux:API)")
+    c.add_argument("--brain_only", action="store_true", help="no skills: just the trained brain")
     c.set_defaults(fn=cmd_chat)
 
     e = sub.add_parser("exam", help="grade Morpheus on every stage")
@@ -240,6 +334,29 @@ def main(argv=None):
     s.add_argument("--size", default="nano", choices=["pico", "nano", "loop", "micro"])
     s.add_argument("--model", default="")
     s.set_defaults(fn=cmd_stats)
+
+    from .learn import HOME
+    g = sub.add_parser("learn", help="one learning session (numpy only; reads your inbox, the internet if allowed)")
+    g.add_argument("--steps", type=int, default=None, help="default: settings session_steps")
+    g.add_argument("--force", action="store_true", help="learn even when not charging")
+    g.add_argument("--online", action="store_true", help="allow the internet for this session only")
+    g.add_argument("--quiet", action="store_true", help="print a single summary line (for scheduled jobs)")
+    g.set_defaults(fn=cmd_learn)
+
+    tq = sub.add_parser("teach", help="teach a question and its answer")
+    tq.add_argument("question")
+    tq.add_argument("answer")
+    tq.set_defaults(fn=cmd_teach)
+
+    st = sub.add_parser("settings", help="show or change what Morpheus may do")
+    st.add_argument("key", nargs="?", default="")
+    st.add_argument("value", nargs="?", default=None)
+    st.set_defaults(fn=cmd_settings)
+
+    sub.add_parser("status", help="brain, library, power and recent sessions").set_defaults(fn=cmd_status)
+    sub.add_parser("undo", help="go back to the brain before the last session").set_defaults(fn=cmd_undo)
+    for p in (c, g, tq, st, sub.choices["status"], sub.choices["undo"]):
+        p.add_argument("--home", default=HOME, help="Morpheus' home folder (default ~/.morpheus)")
 
     args = parser.parse_args(argv)
     args.fn(args)

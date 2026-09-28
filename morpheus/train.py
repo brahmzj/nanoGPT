@@ -18,78 +18,11 @@ import random
 import time
 from contextlib import nullcontext
 
-import numpy as np
 import torch
 
-from . import tokenizer
-from .curriculum import STAGES, Library, exam
+from .curriculum import STAGES, exam
 from .model import Morpheus, MorpheusConfig, SIZES, config_dict
-
-
-class Classroom:
-    """Builds training batches of lessons. Each row is a newline followed by lessons
-    separated by newlines, exactly like the conversation context Morpheus sees later."""
-
-    def __init__(self, stages, block_size, batch_size, replay, seed=1337):
-        self.stages = stages
-        self.T = block_size
-        self.B = batch_size
-        self.replay = replay
-        self.rng = random.Random(seed)
-
-    def pick_stage(self, current):
-        if current is None:  # dreaming: review every stage
-            return self.rng.choice(self.stages)
-        if current > 0 and self.rng.random() < self.replay:
-            return self.stages[self.rng.randrange(current)]
-        return self.stages[current]
-
-    def row(self, current):
-        parts, n = [tokenizer.NEWLINE], 1
-        while n < self.T + 1:
-            lesson = self.pick_stage(current).lesson(self.rng) + tokenizer.NEWLINE
-            parts.append(lesson)
-            n += len(lesson)
-        return tokenizer.encode("".join(parts)[:self.T + 1])
-
-    def batch(self, current, device):
-        data = torch.tensor([self.row(current) for _ in range(self.B)], dtype=torch.long)
-        x, y = data[:, :-1], data[:, 1:]
-        if device.startswith("cuda"):
-            return x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-        return x.to(device), y.to(device)
-
-
-def grade(predict, questions, block_size, batch_size=256):
-    """Score an exam without generating token by token.
-
-    For greedy decoding, "the model outputs the answer" is exactly equivalent to
-    "the argmax prediction at every answer position equals the answer character"
-    (teacher forcing), which needs a single forward pass per batch of questions.
-
-    predict: fn(int64 array (B, T)) -> argmax predictions (B, T)
-    questions: list of (prompt, answer). Returns (score in [0, 1], list of misses).
-    """
-    correct, misses = 0, []
-    for i in range(0, len(questions), batch_size):
-        chunk = questions[i:i + batch_size]
-        seqs, spans = [], []
-        for prompt, answer in chunk:
-            ids = tokenizer.encode(tokenizer.NEWLINE + prompt + answer)[-(block_size + 1):]
-            seqs.append(ids)
-            spans.append((len(ids) - len(answer), len(ids)))
-        width = max(len(s) for s in seqs)
-        x = np.full((len(seqs), width), tokenizer.NEWLINE_ID, dtype=np.int64)
-        for j, s in enumerate(seqs):
-            x[j, :len(s)] = s  # right padding never affects earlier positions in a causal model
-        pred = predict(x[:, :-1])
-        for j, ((a, b), (prompt, answer)) in enumerate(zip(spans, chunk)):
-            got = pred[j, a - 1:b - 1]
-            if np.array_equal(got, x[j, a:b]):
-                correct += 1
-            else:
-                misses.append((prompt, answer, tokenizer.decode(got.tolist())))
-    return correct / max(1, len(questions)), misses
+from .school import Classroom, grade, load_library, print_report_card, report_card
 
 
 def torch_predictor(model, device, ctx):
@@ -102,39 +35,6 @@ def torch_predictor(model, device, ctx):
         model.train(was_training)
         return logits.argmax(-1).cpu().numpy()
     return predict
-
-
-def report_card(predict, stages, block_size, n=200, seed=2024):
-    rows = []
-    for s in stages:
-        if not s._exam_facts:
-            continue
-        score, misses = grade(predict, exam(s, n, seed), block_size)
-        rows.append((s.name, score, misses))
-    return rows
-
-
-def print_report_card(rows, title="report card"):
-    print(f"\n  ~ {title} ~")
-    for name, score, misses in rows:
-        bar = "#" * round(score * 20)
-        print(f"  {name:>8} |{bar:<20}| {score * 100:5.1f}%")
-        for prompt, answer, got in misses[:2]:
-            print(f"           missed: {(prompt + answer).strip()!r:.60}  (said {got.strip()!r:.20})")
-    print()
-
-
-def load_library(path):
-    files = []
-    if os.path.isdir(path):
-        for root, _, names in os.walk(path):
-            files += [os.path.join(root, n) for n in sorted(names) if n.endswith((".txt", ".md"))]
-    else:
-        files = [path]
-    text = "\n".join(open(f, encoding="utf-8", errors="ignore").read() for f in files)
-    text = tokenizer.normalize(text)
-    print(f"library: {len(files)} file(s), {len(text):,} characters")
-    return Library(text)
 
 
 def pick_device(device):
@@ -202,7 +102,12 @@ def train(args):
     def step(stage_idx, lr):
         for group in optimizer.param_groups:
             group["lr"] = lr
-        x, y = classroom.batch(stage_idx, device)
+        data = torch.from_numpy(classroom.rows(stage_idx))
+        if device_type == "cuda":
+            data = data.pin_memory().to(device, non_blocking=True)
+        else:
+            data = data.to(device)
+        x, y = data[:, :-1], data[:, 1:]
         with ctx:
             _, loss = model(x, y)
         loss.backward()

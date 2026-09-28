@@ -17,7 +17,8 @@ from morpheus.compress import dequantize, export, load, pack, quantize, unpack, 
 from morpheus.curriculum import STAGES, Library, exam
 from morpheus.model import KVCache, Morpheus, MorpheusConfig, build
 from morpheus.runtime import NumpyMorpheus
-from morpheus.train import Classroom, grade, torch_predictor
+from morpheus.school import Classroom, grade
+from morpheus.train import torch_predictor
 
 
 def tiny(**kw):
@@ -90,17 +91,17 @@ class TestCurriculum(unittest.TestCase):
 
     def test_classroom_batches(self):
         room = Classroom(STAGES, block_size=64, batch_size=4, replay=0.3)
-        x, y = room.batch(2, "cpu")
-        self.assertEqual(tuple(x.shape), (4, 64))
-        self.assertTrue(torch.equal(x[:, 1:], y[:, :-1]))
-        self.assertTrue((x[:, 0] == tokenizer.NEWLINE_ID).all())
+        rows = room.rows(2)
+        self.assertEqual(rows.shape, (4, 65))
+        self.assertTrue((rows[:, 0] == tokenizer.NEWLINE_ID).all())
+        mixed = Classroom(STAGES[:2], block_size=64, batch_size=64, weights=[1, 0]).rows(None)
+        self.assertNotIn(tokenizer.STOI["*"], mixed)  # weight 0: no counting-stars lessons
 
     def test_library_stage(self):
         lib = Library("once upon a time there was a tiny mind. " * 20)
         self.assertTrue(len(lib.lesson(random.Random(0))) > 0)
         room = Classroom([STAGES[0], lib], block_size=32, batch_size=2, replay=0.0)
-        x, _ = room.batch(1, "cpu")
-        self.assertEqual(tuple(x.shape), (2, 32))
+        self.assertEqual(room.rows(1).shape, (2, 33))
 
 
 class TestModel(unittest.TestCase):
