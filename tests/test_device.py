@@ -3,6 +3,7 @@ Tests for Morpheus on a device: numpy-only learning, lifelong-learning sessions 
 assistant skills. Run with:  python -m unittest tests.test_device -v
 """
 
+import contextlib
 import datetime as dt
 import http.server
 import json
@@ -17,7 +18,7 @@ import numpy as np
 import torch
 
 from morpheus import assistant as asst
-from morpheus.compress import export
+from morpheus.compress import export, load
 from morpheus.curriculum import UNKNOWN_ANSWER
 from morpheus.grad import NumpyTrainer
 from morpheus.learn import Home, gather, html_to_text, session
@@ -83,6 +84,49 @@ class TestNumpyTraining(unittest.TestCase):
         for k in tr.w:
             np.testing.assert_array_equal(back.w[k], tr.w[k])
             np.testing.assert_array_equal(back.m[k], tr.m[k])
+
+
+class TestCompressedLearning(unittest.TestCase):
+
+    def test_quantized_brain_learns_in_its_own_format(self):
+        from morpheus.compress import unpack
+        from morpheus.runtime import NumpyMorpheus
+        m = tiny_model()
+        tr = NumpyTrainer({k: v.numpy() for k, v in m.state_dict().items()}, config_dict(m.cfg), lr=3e-3,
+                          quant={"scheme": "ternary", "embed_scheme": "int8"})
+        x = np.tile(np.arange(20) % 7, (4, 1))
+        first = tr.step(x[:, :-1], x[:, 1:])
+        for _ in range(40):
+            last = tr.step(x[:, :-1], x[:, 1:])
+        self.assertLess(last, first * 0.5)
+        weights, header = unpack(tr.export())
+        self.assertEqual((header["scheme"], header["embed_scheme"]), ("ternary", "int8"))
+        ids = np.random.default_rng(0).integers(0, 96, (2, 24))
+        np.testing.assert_allclose(NumpyMorpheus(weights, header).forward(ids), tr.forward(ids, keep=False)[0],
+                                   atol=1e-5)
+
+    def test_squeeze_end_to_end(self):
+        import argparse
+        from morpheus.train import squeeze
+        with tempfile.TemporaryDirectory() as d:
+            m = tiny_model()
+            ckpt = os.path.join(d, "m.pt")
+            torch.save({"config": config_dict(m.cfg), "model": m.state_dict()}, ckpt)
+            args = argparse.Namespace(ckpt=ckpt, scheme="ternary", embed_scheme="int8", out="", steps=4, lr=1e-3,
+                                      warmup=2, weight_decay=0.0, grad_clip=1.0, batch_size=2, distill=0.5,
+                                      tolerance=0.01, eval_every=2, exam_size=2, log_every=2, watts=25.0,
+                                      device="cpu", threads=1, seed=0)
+            with open(os.devnull, "w") as null, contextlib.redirect_stdout(null):
+                out = squeeze(args)
+            weights, header = load(out)
+            self.assertEqual(header["scheme"], "ternary")
+            self.assertTrue(os.path.exists(os.path.splitext(out)[0] + ".pt"))
+            # a squeezed brain keeps learning on a device in the same format
+            home = Home(os.path.join(d, "home"))
+            with open(home.file("brain.morph"), "wb") as f, open(out, "rb") as g:
+                f.write(g.read())
+            trainer, _ = home.load_trainer()
+            self.assertEqual(trainer.quant["scheme"], "ternary")
 
 
 class _Server(http.server.BaseHTTPRequestHandler):

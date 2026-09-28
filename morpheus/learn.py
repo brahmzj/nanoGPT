@@ -130,9 +130,10 @@ class Home:
             raise FileNotFoundError("no brain to grow: train one (python -m morpheus train) or get brains/")
         if src.endswith(".npz"):
             trainer = NumpyTrainer.load(src)
-        else:
+        else:  # a compressed brain keeps learning in its own format
             weights, header = load(src)
-            trainer = NumpyTrainer(weights, header["config"])
+            quant = {"scheme": header.get("scheme", "int8"), "embed_scheme": header.get("embed_scheme")}
+            trainer = NumpyTrainer(weights, header["config"], quant=quant)
         trainer.lr = self.settings["lr"]
         return trainer, src
 
@@ -413,7 +414,7 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
         home.backup()
         trainer.save(home.file("brain-train.npz"))
         with open(home.file("brain.morph"), "wb") as f:
-            f.write(trainer.export("int8", meta={"grown_on_device": True, "last_session": summary}))
+            f.write(trainer.export(meta={"grown_on_device": True, "last_session": summary}))
         log(f"kept: exam {curriculum_before * 100:.1f}% -> {curriculum_after * 100:.1f}%"
             + (f", taught facts {summary['taught_before'] * 100:.0f}% -> {summary['taught_after'] * 100:.0f}%"
                if taught else ""))

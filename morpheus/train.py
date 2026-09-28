@@ -190,3 +190,104 @@ def train(args):
     print(f"compressed brain ({args.export_scheme}): {morph_path} ({nbytes / 1024:.0f} KB)")
     print(f"talk to it:  python -m morpheus chat --model {morph_path}")
     return raw_model, rows
+
+
+def squeeze(args):
+    """Compress to the extreme and keep learning: quantization-aware training with distillation.
+
+    A copy of the brain (the student) sees only its quantized weights in every forward pass,
+    while updates go to the float weights underneath (straight-through estimator). It studies
+    the whole curriculum, learning both from the lessons and from its own full-precision self
+    (the teacher). Exams are sat by the *compressed* student, and it stops as soon as it is back
+    within `tolerance` of the teacher (mastery gating, again, to save energy).
+    """
+    import copy
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from torch.nn.utils import parametrize
+    from .compress import export, load as load_morph
+    from .quant import FakeQuant, scheme_for
+    from .runtime import NumpyMorpheus
+
+    device = pick_device(args.device)
+    device_type = "cuda" if device.startswith("cuda") else device
+    if args.threads:
+        torch.set_num_threads(args.threads)
+    torch.manual_seed(args.seed)
+    teacher, _ = load_model(args.ckpt, device)
+    teacher.eval()
+    student = copy.deepcopy(teacher).train()
+    for name, module in student.named_modules():
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            scheme = scheme_for(f"{name}.weight", args.scheme, args.embed_scheme)
+            if scheme not in ("f32", "f16"):
+                parametrize.register_parametrization(module, "weight", FakeQuant(scheme))
+    cfg = student.cfg
+    stages = list(STAGES)
+    predict_t = torch_predictor(teacher, device, nullcontext())
+    predict_s = torch_predictor(student, device, nullcontext())
+
+    def score(predict, seed):
+        rows = report_card(predict, stages, cfg.block_size, n=args.exam_size, seed=seed)
+        return sum(r[1] for r in rows) / len(rows), rows
+
+    teacher_score, _ = score(predict_t, 99)
+    start_score, _ = score(predict_s, 99)
+    target = teacher_score - args.tolerance
+    print(f"squeezing to {args.scheme}" + (f" (embedding {args.embed_scheme})" if args.embed_scheme else "")
+          + f": teacher {teacher_score * 100:.1f}%, rounded student starts at {start_score * 100:.1f}%, "
+          f"target {target * 100:.1f}%")
+
+    optimizer = student.configure_optimizer(args.lr, args.weight_decay, (0.9, 0.99), device_type)
+    classroom = Classroom(stages, cfg.block_size, args.batch_size, seed=args.seed)
+    best, best_state, t0 = start_score, copy.deepcopy(student.state_dict()), time.time()
+    T, alpha = 1.0, args.distill
+    for step in range(1, args.steps + 1):
+        progress = step / args.steps
+        lr = args.lr * min(1.0, step / args.warmup) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+        data = torch.from_numpy(classroom.rows(None)).to(device)
+        x, y = data[:, :-1], data[:, 1:]
+        logits, ce = student(x, y)
+        loss = ce
+        if alpha > 0:
+            with torch.no_grad():
+                t_logits, _ = teacher(x)
+            kd = F.kl_div(F.log_softmax(logits.reshape(-1, logits.size(-1)) / T, -1),
+                          F.log_softmax(t_logits.reshape(-1, t_logits.size(-1)) / T, -1),
+                          log_target=True, reduction="batchmean") * T * T
+            loss = (1 - alpha) * ce + alpha * kd
+        loss.backward()
+        if args.grad_clip:
+            torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        if step % args.log_every == 0:
+            print(f"  step {step:5d}  loss {loss.item():.4f} (lessons {ce.item():.4f})  lr {lr:.2e}  "
+                  f"{(time.time() - t0) / step * 1000:.0f}ms/step")
+        if step % args.eval_every == 0 or step == args.steps:
+            now, rows = score(predict_s, 1000 + step)
+            print(f"  exam after {step} steps: {now * 100:.1f}%  (" +
+                  " ".join(f"{n} {s * 100:.0f}" for n, s, _ in rows) + ")")
+            if now > best:
+                best, best_state = now, copy.deepcopy(student.state_dict())
+            if now >= target:
+                print(f"  back within {args.tolerance * 100:.1f} points of the teacher: done")
+                break
+    student.load_state_dict(best_state)
+    for module in student.modules():  # keep the float weights underneath; export rounds them the same way
+        if parametrize.is_parametrized(module, "weight"):
+            parametrize.remove_parametrizations(module, "weight", leave_parametrized=False)
+    seconds = time.time() - t0
+    out = args.out or os.path.join(os.path.dirname(args.ckpt) or ".", f"morpheus-{args.scheme}.morph")
+    meta = {"squeezed_from": os.path.basename(args.ckpt), "steps": step, "seconds": round(seconds, 1)}
+    nbytes = export(student, out, scheme=args.scheme, meta=meta, embed_scheme=args.embed_scheme)
+    torch.save({"config": config_dict(cfg), "model": student.state_dict(), "scheme": args.scheme,
+                "embed_scheme": args.embed_scheme}, os.path.splitext(out)[0] + ".pt")
+    brain = NumpyMorpheus(*load_morph(out))  # grade the real file, exactly as a phone would load it
+    rows = report_card(brain.predict, stages, cfg.block_size, n=args.exam_size * 2, seed=7)
+    print_report_card(rows, title=f"{args.scheme} brain: {out}")
+    print(f"{out}: {nbytes / 1024:.1f} KB, {step} steps, {seconds:.0f}s "
+          f"(~{seconds * args.watts / 3600:.2f} Wh at {args.watts:g} W)")
+    return out

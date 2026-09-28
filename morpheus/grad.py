@@ -7,6 +7,11 @@ every gradient against PyTorch autograd.
 
 The optimizer is AdamW with PyTorch's semantics (decoupled weight decay, bias
 correction) plus global gradient-norm clipping.
+
+A compressed brain (int4, ternary, ...) keeps learning in its own format: the forward and
+backward passes use the quantized weights, and the updates go to float weights underneath
+(the straight-through estimator, as in train.py: squeeze). So a ternary brain on a phone
+stays ternary, and what it learns is exactly what the saved file contains.
 """
 
 import json
@@ -14,6 +19,7 @@ import json
 import numpy as np
 
 from .compress import pack
+from .quant import FLOAT_SCHEMES, fake_quant_np, scheme_for
 
 EPS = 1e-6
 
@@ -35,8 +41,10 @@ def softmax(z):
 
 class NumpyTrainer:
 
-    def __init__(self, weights, config, lr=3e-4, weight_decay=0.1, betas=(0.9, 0.99), grad_clip=1.0):
+    def __init__(self, weights, config, lr=3e-4, weight_decay=0.1, betas=(0.9, 0.99), grad_clip=1.0,
+                 quant=None):
         self.cfg = dict(config)
+        self.quant = quant  # None, or {"scheme": "ternary", "embed_scheme": None}
         self.w = {k: np.array(v, dtype=np.float32) for k, v in weights.items()}
         self.m = {k: np.zeros_like(v) for k, v in self.w.items()}
         self.v = {k: np.zeros_like(v) for k, v in self.w.items()}
@@ -58,9 +66,20 @@ class NumpyTrainer:
 
     # ------------------------------------------------------------------ forward
 
-    def forward(self, ids, keep=True):
+    def effective(self):
+        """The weights the brain actually thinks with: quantized if it is a compressed brain."""
+        if not self.quant or self.quant["scheme"] in FLOAT_SCHEMES:
+            return self.w
+        out = {}
+        for k, v in self.w.items():
+            scheme = scheme_for(k, self.quant["scheme"], self.quant.get("embed_scheme"))
+            out[k] = v if scheme in FLOAT_SCHEMES or v.ndim < 2 else fake_quant_np(v, scheme)
+        return out
+
+    def forward(self, ids, keep=True, w=None):
         """ids (B, T) -> logits (B, T, V), plus the activations needed for backward."""
-        c, w = self.cfg, self.w
+        c = self.cfg
+        w = self.effective() if w is None else w
         B, T = ids.shape
         nh, nkv, hd = c["n_head"], c["n_kv_head"], self.hd
         g = nh // nkv
@@ -96,8 +115,8 @@ class NumpyTrainer:
     # ------------------------------------------------------------------ backward
 
     def loss_and_grads(self, x, y):
-        c, w = self.cfg, self.w
-        logits, (ids, tape, hf, rf) = self.forward(x)
+        c, w = self.cfg, self.effective()  # gradients flow through the weights actually used
+        logits, (ids, tape, hf, rf) = self.forward(x, w=w)
         B, T, V = logits.shape
         nh, nkv, hd, d = c["n_head"], c["n_kv_head"], self.hd, c["n_embd"]
         g = nh // nkv
@@ -111,7 +130,7 @@ class NumpyTrainer:
         dlogits[rows, targets] -= 1.0
         dlogits = (dlogits / flat.shape[0]).reshape(B, T, V)
 
-        grads = {k: np.zeros_like(v) for k, v in w.items()}
+        grads = {k: np.zeros_like(v) for k, v in self.w.items()}
         grads["wte.weight"] += dlogits.reshape(-1, V).T @ hf.reshape(-1, d)
         dx = rms_bwd(dlogits @ w["wte.weight"], hf, rf)
         for p, h, r1, q, k, v, att, yc, h2, r2, relu, act in reversed(tape):
@@ -171,18 +190,22 @@ class NumpyTrainer:
         arrays.update({f"m/{k}": v for k, v in self.m.items()})
         arrays.update({f"v/{k}": v for k, v in self.v.items()})
         with open(path, "wb") as f:  # a file object stops numpy from appending ".npz"
-            np.savez(f, t=np.array(self.t), config=np.array(json.dumps(self.cfg)), **arrays)
+            np.savez(f, t=np.array(self.t), config=np.array(json.dumps(self.cfg)),
+                     quant=np.array(json.dumps(self.quant)), **arrays)
 
     @classmethod
     def load(cls, path, **kw):
         with np.load(path) as z:
             weights = {k[2:]: z[k] for k in z.files if k.startswith("w/")}
-            trainer = cls(weights, json.loads(str(z["config"])), **kw)
+            quant = json.loads(str(z["quant"])) if "quant" in z.files else None
+            trainer = cls(weights, json.loads(str(z["config"])), quant=quant, **kw)
             for k in weights:
                 trainer.m[k], trainer.v[k] = z["m/" + k], z["v/" + k]
             trainer.t = int(z["t"])
         return trainer
 
-    def export(self, scheme="int8", meta=None):
-        """The bytes of a .morph file holding the current weights."""
-        return pack(self.w, self.cfg, scheme, meta)
+    def export(self, scheme=None, meta=None):
+        """The bytes of a .morph file holding the current weights (in the brain's own format)."""
+        if scheme is None and self.quant:
+            return pack(self.w, self.cfg, self.quant["scheme"], meta, self.quant.get("embed_scheme"))
+        return pack(self.w, self.cfg, scheme or "int8", meta)

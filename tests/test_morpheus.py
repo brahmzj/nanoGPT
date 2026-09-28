@@ -180,10 +180,46 @@ class TestCompression(unittest.TestCase):
             self.assertEqual(back.shape, w.shape)
             self.assertLessEqual(np.abs(back - w).max(), tol + 1e-7, scheme)
 
+    def test_every_scheme_is_bit_exact_everywhere(self):
+        """Stored file == numpy fake quant == torch fake quant, so what trains is what ships."""
+        from morpheus.quant import SCHEMES, fake_quant_np, fake_quant_torch
+        rng = np.random.default_rng(3)
+        for shape in ((48, 80), (37, 70), (96, 128)):
+            w = rng.normal(0, 0.02, size=shape).astype(np.float32)
+            for scheme in SCHEMES:
+                parts, info = quantize(w, scheme)
+                stored = dequantize(b"".join(parts), shape, info)
+                np.testing.assert_array_equal(stored, fake_quant_np(w, scheme), err_msg=scheme)
+                np.testing.assert_array_equal(fake_quant_torch(torch.from_numpy(w), scheme).numpy(), stored,
+                                              err_msg=scheme)
+
+    def test_low_bit_levels(self):
+        from morpheus.quant import quantize_np
+        w = np.random.default_rng(4).normal(size=(16, 64)).astype(np.float32)
+        self.assertEqual(set(np.unique(quantize_np(w, "ternary")[0])), {-1, 0, 1})
+        self.assertEqual(set(np.unique(quantize_np(w, "binary")[0])), {-1, 1})
+        self.assertLessEqual(np.abs(quantize_np(w, "int3")[0]).max(), 3)
+        parts, _ = quantize(w, "ternary")
+        self.assertEqual(len(parts[1]), -(-w.size // 5))  # 5 weights per byte
+        parts, _ = quantize(w, "binary")
+        self.assertEqual(len(parts[1]), w.size // 8)
+
+    def test_fake_quant_passes_gradients_straight_through(self):
+        from morpheus.quant import fake_quant_torch
+        w = torch.randn(8, 32, requires_grad=True)
+        (fake_quant_torch(w, "ternary") * 3).sum().backward()
+        torch.testing.assert_close(w.grad, torch.full_like(w, 3.0))
+
     def test_int4_packs_two_weights_per_byte(self):
         w = np.random.default_rng(1).normal(size=(64, 64)).astype(np.float32)
         parts, _ = quantize(w, "int4")
         self.assertEqual(len(parts[1]), w.size // 2)
+
+    def test_shipped_brain_still_loads(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "brains", "morpheus-nano.morph")
+        if os.path.exists(path):
+            weights, header = load(path)
+            self.assertEqual(weights["wte.weight"].shape, (96, header["config"]["n_embd"]))
 
     def test_file_roundtrip(self):
         m = tiny()
@@ -198,8 +234,11 @@ class TestCompression(unittest.TestCase):
         m = build("pico")
         sizes = {}
         with tempfile.TemporaryDirectory() as d:
-            for scheme in ("f32", "f16", "int8", "int4"):
+            for scheme in ("f32", "f16", "int8", "int4", "int3", "ternary", "binary"):
                 sizes[scheme] = export(m, os.path.join(d, f"{scheme}.morph"), scheme)
+        self.assertLess(sizes["binary"], sizes["ternary"])
+        self.assertLess(sizes["ternary"], sizes["int3"])
+        self.assertLess(sizes["int3"], sizes["int4"])
         self.assertLess(sizes["int4"], sizes["int8"])
         self.assertLess(sizes["int8"], sizes["f16"])
         self.assertLess(sizes["f16"], sizes["f32"])
