@@ -131,7 +131,7 @@ def train(args):
         has_exam = bool(stage._exam_facts)
         print(f"\n== stage {stage_idx + 1}/{len(stages)}: {stage.name} ({stage.title}) ==")
         t0, local, passed, score = time.time(), 0, False, None
-        lr_scale, best, stale = 1.0, -1.0, 0  # each stage starts at full speed
+        lr_scale, best, stale, recent = 1.0, -1.0, 0, []  # each stage starts at full speed
         budget = args.max_steps if has_exam else args.library_steps
         while local < budget:
             loss = step(stage_idx, warm_lr() * lr_scale)
@@ -147,8 +147,11 @@ def train(args):
                 if score >= args.pass_mark:
                     passed = True
                     break
-                # stuck on a plateau? take smaller steps (noise near mastery comes from a high lr)
-                best, stale = (score, 0) if score > best + 0.005 else (best, stale + 1)
+                # stuck on a plateau? take smaller steps (noise near mastery comes from a high lr).
+                # Judge progress on the average of the last 3 exams: one lucky exam is not a trend.
+                recent = (recent + [score])[-3:]
+                smooth = sum(recent) / len(recent)
+                best, stale = (smooth, 0) if smooth > best + 0.01 else (best, stale + 1)
                 if stale >= args.patience and lr_scale > args.min_lr_scale:
                     lr_scale, stale = max(lr_scale / 2, args.min_lr_scale), 0
                     print(f"  plateau: slowing down, lr x{lr_scale:g}")

@@ -298,7 +298,7 @@ def main(argv=None):
     t.add_argument("--exam_every", type=int, default=100)
     t.add_argument("--exam_size", type=int, default=200)
     t.add_argument("--max_steps", type=int, default=4000, help="give up on a stage after this many steps")
-    t.add_argument("--patience", type=int, default=3, help="exams without progress before halving the lr")
+    t.add_argument("--patience", type=int, default=4, help="exams without progress before halving the lr")
     t.add_argument("--min_lr_scale", type=float, default=0.125, help="never slow below this fraction of --lr")
     t.add_argument("--dream_steps", type=int, default=1000, help="final review with a fading learning rate")
     t.add_argument("--log_every", type=int, default=50)
