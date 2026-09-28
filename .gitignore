@@ -13,3 +13,4 @@ venv/
 out-morpheus/
 *.morph
 !brains/*.morph
+android/app/build/

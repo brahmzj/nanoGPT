@@ -5,7 +5,36 @@ Morpheus runs **on the phone itself**: no cloud, no account, no PyTorch. It need
 keeps learning from files you give it, from things you teach it, and from the internet
 **only if you allow it**. Learning only happens while the phone is charging.
 
-## Install (about 5 minutes)
+## One tap: the Morpheus app (easiest)
+
+1. On your phone, open this link:
+   **<https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk>**
+   It's a 204 KB download that includes the 153 KB brain.
+2. Tap the downloaded file. The first time, Android asks you to allow installs from your
+   browser: allow it and go back. Play Protect may say the app is from an unknown developer;
+   tap **Install anyway**. It's your own app, built from this repository.
+3. Tap the **☾ Morpheus** icon.
+
+What the app does, entirely on the phone, with no account and nothing uploaded:
+
+- **Chat** with the brain (type, or tap 🎤 to talk). 🔊 makes it answer out loud.
+- **Assistant skills**: notes, to-do list, alarms and timers (your Clock app), time and date,
+  battery, math that is checked by a calculator, web search.
+- **Teach it**: when it says "i have not learned that yet", the question is ready in the text box.
+  Type the answer after `=` and send. From then on it answers that question.
+- **Look things up** on Simple English Wikipedia, but only after you tap 🌐 to allow the internet.
+  The app's only permissions are internet (for that) and setting alarms.
+
+The app remembers what you teach it, but its brain doesn't retrain on the phone yet. For
+Morpheus to keep *learning*, meaning its brain weights change while it reads your files and
+Wikipedia, use the Termux version below. It installs alongside the app and runs the same brain.
+
+About signing: the app is signed with a public debug key (`android/app/morpheus-debug.keystore`),
+so new versions install over old ones and keep your notes. Because the key is public, only install
+`Morpheus.apk` from this repository. To rebuild it yourself: `bash android/app/build.sh` (needs a JDK
+and `apt install aapt apksigner zipalign dalvik-exchange android-sdk-platform-23`).
+
+## The full version in Termux (keeps learning)
 
 1. Install **Termux** from F-Droid: <https://f-droid.org/packages/com.termux/>.
    Don't use the Play Store version, which is outdated.

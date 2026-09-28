@@ -16,7 +16,10 @@ sets reminders and alarms, checks its own math, and **keeps learning on your pho
 files, from what you teach it, and from the internet only when you allow it. It learns only
 while charging, and it rolls back any session that makes it forget.
 
-**On Android:** see [android/README.md](android/README.md), a one-command install in Termux.
+**On Android:** tap to install **[Morpheus.apk](https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk)**
+(204 KB, brain included). The app has chat, voice and the assistant skills, runs entirely on
+the phone and needs no setup. For lifelong learning, there's a one-command Termux install.
+Both are described in [android/README.md](android/README.md).
 
 ```
 you> what comes after k?
@@ -42,7 +45,7 @@ python -m morpheus chat                 # talk to it
 python -m morpheus exam                 # report card for every stage
 python -m morpheus stats                # size / compute budget
 python -m morpheus squeeze --scheme ternary        # compress to 1.58 bits and keep learning
-python -m unittest tests.test_morpheus tests.test_device   # 48 tests, a few seconds
+python -m unittest tests.test_morpheus tests.test_device tests.test_android   # 52 tests
 ```
 
 Run the commands from the repository root. A trained brain ships in
@@ -351,6 +354,7 @@ morpheus/
   __main__.py     the `python -m morpheus` command line
 brains/morpheus-nano.morph   the trained brain (ternary, 153 KB, 97.8%)
 brains/morpheus-nano-binary.morph, brains/morpheus-loop.morph   extreme options (100 KB, 85 KB)
-android/        Termux installer, learning job and phone guide
+android/        Morpheus.apk, the app source (android/app: Java brain + assistant + UI,
+                build.sh), the Termux installer, learning job and phone guide
 tests/test_morpheus.py, tests/test_device.py
 ```
