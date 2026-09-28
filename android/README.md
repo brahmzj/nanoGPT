@@ -9,7 +9,7 @@ keeps learning from files you give it, from things you teach it, and from the in
 
 1. On your phone, open this link:
    **<https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk>**
-   It's a small download (about 330 KB) that includes the 153 KB brain and its curriculum for studying.
+   It's a small download (about 350 KB) that includes the 153 KB brain and its curriculum for studying.
    If the link won't download, see the note below.
 2. Tap the downloaded file. The first time, Android asks you to allow installs from your
    browser: allow it and go back. Play Protect may say the app is from an unknown developer;
@@ -27,25 +27,61 @@ What the app does, entirely on the phone, with no account and nothing uploaded:
 - **Chat** with the brain (type, or tap 🎤 to talk). 🔊 makes it answer out loud.
 - **Assistant skills**: notes, to-do list, alarms and timers (your Clock app), time and date,
   battery, math that is checked by a calculator, web search.
-- **Teach it**: when it says "i have not learned that yet", the question is ready in the text box.
-  Type the answer after `=` and send. It answers from memory right away, and studies it into its
-  brain at the next learning session.
+- **Curiosity**: when it doesn't know, it says "i don't know yet", and then tries to find out. When
+  it is only guessing, it says "i think …, but i am not sure yet" (ask "how sure are you?"). See
+  *Curiosity* below.
+- **Teach it**: when it asks "do you know?", just answer in your own words ("madrid is the capital
+  of spain."). Or use `/teach question = answer`. It answers from memory right away, and studies it
+  into its brain at the next learning session.
+- **Give it tasks**: "find out who invented the telephone", "learn about volcanoes". It keeps working
+  on them in the background, even with the app closed, until they are done, and tells you.
+  "what are you working on?" lists them, and "never mind …" cancels one.
 - **Look things up** on Simple English Wikipedia, but only after you tap 🌐 to allow the internet.
 - **Share → Morpheus** from any app: text is read at the next session, and links too once 🌐 is on.
 
-The app's permissions: internet (only used after you tap 🌐), setting alarms, and restarting its
-learning schedule after a reboot.
+The app's permissions:
+
+- internet, used only after you tap 🌐;
+- setting alarms;
+- restarting its learning schedule after a reboot;
+- waiting for a network before working on your tasks;
+- notifications, to tell you when a task is done while you are away (Android 13+ asks you once).
+
+### Curiosity: when it doesn't know
+
+"I don't know yet" is allowed, but it never stops there. The loop is the simplest version of how a
+mind learns (the full story, with measurements, is in [MORPHEUS.md](../MORPHEUS.md#curiosity-the-smallest-version-of-a-mind-that-wants-to-know)):
+
+1. **Notice.** It knows how sure it is, from its own brain's probabilities. On its exam, 91% of its
+   wrong answers were flagged as unsure and only 3% of its right ones. Unsure answers come as "i think
+   …, but i am not sure yet, so i will check."
+2. **Wonder.** Everything it could not answer, or was unsure of, goes on its list of questions. The
+   most interesting come first: the ones you asked again, the ones close to what it knows, and the
+   ones where it has a guess to check. Ask "what are you curious about?"
+3. **Seek.** With 🌐 on, it looks it up right away and tells you which page the answer came from. If
+   that fails, it keeps working on it in the background: a full-text search, then a search for its
+   key words. After three misses it asks you: "i have been wondering: … do you know?"
+4. **Connect.** It reasons over what it read and was told. "is the eiffel tower in france?" gets
+   "yes. the eiffel tower is in paris and paris is in france." It thinks yes/no questions through
+   from what it knows ("is a cat an animal?" → "yes. a cat is an animal."). It also asks its own
+   questions: France has a capital and Spain is a country, so what is the capital of Spain?
+5. **Consolidate.** While charging, it studies what it found. When it checks a guess, it tells you
+   whether it was right.
+
+When it finds the answer to your question, it tells you the next time you talk ("you asked me …, i
+found out: …"), or with a notification if the app is closed.
 
 ### Self-learning
 
 Morpheus studies **by itself, only while the phone is charging** (about every 6 hours, via
-Android's job scheduler), or right now when you tap 🧠. What it learns from:
+Android's job scheduler), or right now when you tap 🧠. After tapping 🧠 you can close the app: it
+keeps studying in the background and tells you when it is done. What it learns from:
 
-1. **What you teach it**: `/teach question = answer`, or the one-tap teach.
-2. **Its own mistakes**: when the calculator corrects its math, the correction becomes a lesson.
-3. **Its own curiosity**: every question it could not answer is remembered. With 🌐 on, a session
-   looks those up on Simple English Wikipedia and studies the answers. Ask it "what are you
-   curious about?"
+1. **What you teach it**: `/teach question = answer`, or just answering when it asks you.
+2. **Its own mistakes**: when the calculator (or its letter-by-letter spelling check) corrects it,
+   the correction becomes a lesson.
+3. **Its own curiosity**: every question it could not answer, and a few questions of its own. See
+   *Curiosity* above.
 4. **What it reads**: your interests ("learn about volcanoes") and where they lead. See
    *Browsing* below.
 5. **What you share with it**: Share → Morpheus from any app.
@@ -79,12 +115,14 @@ Tap 🌐 to let it use the internet, then tell it what to read:
 
 ```
 you> learn about volcanoes
-morpheus> ok! i will read about volcanoes the next time i study (while you charge me, or tap the brain now).
+morpheus> ok! i am reading about volcanoes in the background. i will tell you when i am done, and study it the next time you charge me.
 ```
 
-Each session (charging, or 🧠) it reads about 6 Simple English Wikipedia pages: first the
-questions it could not answer (its own curiosity), then your interests, then a few pages they
-link to (Volcano → Lava → Mount Vesuvius…). Links you share go in too. Then it **absorbs** what it read:
+It starts reading right away, in the background, and tells you when it is done ("you asked me to
+learn about volcanoes. i read "volcano": …"). Learning sessions (charging, or 🧠) read about 6
+Simple English Wikipedia pages: first its questions (yours before its own), then your interests,
+then a few pages they link to (Volcano → Lava → Mount Vesuvius…). Links you share go in too. Then
+it **absorbs** what it read:
 
 - **Every sentence goes into a searchable memory.** Ask "what do you know about lava?", "tell
   me about the eiffel tower", or anything its brain does not know, and it answers with the

@@ -98,6 +98,9 @@ public final class Reader {
                 && !m.group(1).matches(".*\\b(this|that|these|those|there|which|who|it|they|he|she)\\b.*")) {
                 put(out, "what " + m.group(2) + " " + m.group(1), answer);
                 if (PERSON.matcher(m.group(3)).find()) put(out, "who " + m.group(2) + " " + m.group(1), answer);
+                // "mount everest is the tallest mountain": "the tallest mountain" names one thing, so it works both ways
+                if (m.group(3).startsWith("the ") && words(m.group(3)) <= 7 && !m.group(3).matches(".*\\b(of|who|which|that|where|when|and|or|but)\\b.*"))
+                    put(out, (PERSON.matcher(m.group(3)).find() ? "who " : "what ") + m.group(2) + " " + m.group(3), answer);
             }
         }
         List<String[]> list = new ArrayList<>();

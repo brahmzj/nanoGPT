@@ -125,6 +125,23 @@ public final class Phone implements Assistant.Platform, Learner.World {
         }
     }
 
+    /** Simple English Wikipedia's full-text search: the titles of up to 3 pages, best first. */
+    public List<String> search(String query) {
+        List<String> out = new ArrayList<>();
+        if (!internetAllowed()) return out;
+        try {
+            JSONArray hits = new JSONObject(get(WIKI + "/w/api.php?action=query&format=json&list=search&srlimit=3&srprop="
+                                                + "&srsearch=" + URLEncoder.encode(query, "UTF-8")))
+                .getJSONObject("query").getJSONArray("search");
+            for (int i = 0; i < hits.length(); i++) out.add(hits.getJSONObject(i).getString("title"));
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** Keep working on your tasks in the background until they are done. */
+    public void workInBackground() { Mind.work(context); }
+
     public String randomArticle() {
         if (!internetAllowed()) return null;
         try {
@@ -183,7 +200,7 @@ public final class Phone implements Assistant.Platform, Learner.World {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(10000);
         c.setReadTimeout(15000);
-        c.setRequestProperty("User-Agent", "Morpheus-Android/1.1 (tiny personal assistant)");
+        c.setRequestProperty("User-Agent", "Morpheus-Android/1.3 (tiny personal assistant)");
         try (InputStream in = c.getInputStream()) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[8192];

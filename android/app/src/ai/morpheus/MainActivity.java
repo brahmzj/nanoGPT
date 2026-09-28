@@ -6,11 +6,13 @@ import android.content.DialogInterface;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.provider.AlarmClock;
@@ -57,7 +59,6 @@ public class MainActivity extends Activity {
     Phone phone;
     volatile Assistant assistant;
     volatile Brain brainInUse;
-    volatile boolean learning;
     TextView status;
     LinearLayout messages;
     ScrollView scroll;
@@ -159,6 +160,9 @@ public class MainActivity extends Activity {
                 prefs.edit().putBoolean("internet", on).apply();
                 showToggles();
                 toast(on ? "internet look-ups allowed" : "internet off: everything stays on your phone");
+                if (on) worker.execute(new Runnable() {  // tasks that were waiting for the internet
+                    public void run() { if (Learner.hasWork(phone)) Mind.work(MainActivity.this); }
+                });
             }
         });
         speaker.setOnClickListener(new View.OnClickListener() {
@@ -182,7 +186,8 @@ public class MainActivity extends Activity {
         showToggles();
 
         bubble("hello! i am morpheus. i learned from abc and 123. ask me about letters, numbers, "
-               + "words or math, or say help. 🎤 lets you talk to me. i keep learning while your phone "
+               + "words or math, or say help. 🎤 lets you talk to me. when i don't know something, or i am "
+               + "not sure, i tell you, and then i try to find out. i keep learning while your phone "
                + "charges, and 🧠 makes me study right now. to let me read and teach myself, tap 🌐 "
                + "and say: learn about volcanoes.", false);
         tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
@@ -195,6 +200,7 @@ public class MainActivity extends Activity {
                 try {
                     brainInUse = Mind.brain(MainActivity.this);
                     assistant = new Assistant(brainInUse, phone);
+                    curious(assistant.greet());  // what it found out, and maybe a question of its own
                 } catch (final Exception e) {
                     runOnUiThread(new Runnable() {
                         public void run() { bubble("(my brain would not load: " + e + ")", false); }
@@ -211,13 +217,55 @@ public class MainActivity extends Activity {
         handleShare(intent);
     }
 
+    /** While you look at the chat, the background jobs report here (progress, results, news). */
+    final Mind.Ui ui = new Mind.Ui() {
+        public void progress(final String m) {
+            runOnUiThread(new Runnable() { public void run() { status.setText("🧠 " + m); } });
+        }
+        public void studied(final String summary, final boolean kept) {
+            worker.execute(new Runnable() {
+                public void run() {
+                    try {
+                        if (kept) {
+                            brainInUse = Mind.brain(MainActivity.this);
+                            assistant = new Assistant(brainInUse, phone);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            status.setText("");
+                            bubble(summary, false);
+                            if (speakReplies) say(summary);
+                        }
+                    });
+                    if (assistant != null) curious(assistant.greet());
+                }
+            });
+        }
+        public void news() {
+            worker.execute(new Runnable() {
+                public void run() { if (assistant != null) curious(assistant.greet()); }
+            });
+        }
+    };
+
+    @Override
+    protected void onPause() {
+        if (Mind.ui == ui) Mind.ui = null;  // away: news becomes a notification
+        super.onPause();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
-        worker.execute(new Runnable() {  // did it study while we were away?
+        Mind.ui = ui;
+        status.setText(Mind.studying ? "🧠 studying… (you can keep talking to me)" : "");
+        worker.execute(new Runnable() {  // did it study, or find something out, while we were away?
             public void run() {
+                if (assistant != null) curious(assistant.greet());
                 try {
-                    if (brainInUse != null && !learning && Mind.grewSince(MainActivity.this, brainInUse)) {
+                    if (brainInUse != null && !Mind.studying && Mind.grewSince(MainActivity.this, brainInUse)) {
                         brainInUse = Mind.brain(MainActivity.this);
                         assistant = new Assistant(brainInUse, phone);
                         List<String> sessions = phone.readList("sessions");
@@ -225,6 +273,7 @@ public class MainActivity extends Activity {
                         runOnUiThread(new Runnable() {
                             public void run() { bubble("(while you were away, i studied. " + last + ")", false); }
                         });
+                        curious(assistant.greet());
                     }
                 } catch (Exception ignored) {
                 }
@@ -242,39 +291,20 @@ public class MainActivity extends Activity {
         bubble(phone.share((subject != null && !text.startsWith("http") ? subject + "\n" : "") + text), false);
     }
 
+    /** Study now, in the background: it keeps going if you close the app, and tells you when it is done. */
     void learnNow() {
-        if (learning) { toast("i am already studying"); return; }
-        learning = true;
-        status.setText("🧠 getting ready to study… (you can keep talking to me)");
-        new Thread(new Runnable() {
-            public void run() {
-                String message;
-                try {
-                    Learner.Result r = Mind.learn(MainActivity.this, phone, new Learner.Progress() {
-                        public void update(final String m) {
-                            runOnUiThread(new Runnable() { public void run() { status.setText("🧠 " + m); } });
-                        }
-                        public boolean cancelled() { return isFinishing(); }
-                    }, 8 * 60 * 1000L);
-                    message = r.summary;
-                    if (r.kept) {
-                        brainInUse = Mind.brain(MainActivity.this);
-                        assistant = new Assistant(brainInUse, phone);
-                    }
-                } catch (Throwable e) {
-                    message = "(i could not study: " + e + ")";
-                }
-                final String done = message;
-                learning = false;
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        status.setText("");
-                        bubble(done, false);
-                        if (speakReplies) say(done);
-                    }
-                });
-            }
-        }, "morpheus-learn-now").start();
+        if (Mind.studying) { toast("i am already studying"); return; }
+        askToNotify();
+        if (Mind.studyNow(this)) status.setText("🧠 getting ready to study… (you can keep talking to me, or close the app)");
+        else toast("i could not start studying right now. i will study the next time you charge me.");
+    }
+
+    /** Android 13+: may it tell you when it finishes a task while you are away? Asked once. */
+    void askToNotify() {
+        if (Build.VERSION.SDK_INT < 33 || prefs.getBoolean("asked_notify", false)) return;
+        prefs.edit().putBoolean("asked_notify", true).apply();
+        if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 8);
     }
 
     void askToUnlearn() {
@@ -315,33 +345,43 @@ public class MainActivity extends Activity {
         worker.execute(new Runnable() {
             public void run() {
                 final String reply;
-                final boolean unknown;
+                final boolean asks;
                 if (assistant == null) {
                     reply = "(still waking up, try again in a moment)";
-                    unknown = false;
+                    asks = false;
                 } else if (message.equals("/learn")) {
                     runOnUiThread(new Runnable() { public void run() { learnNow(); } });
                     reply = "ok, i will study now.";
-                    unknown = false;
+                    asks = false;
                 } else if (message.startsWith("/teach")) {
                     reply = teach(message.substring(6));
-                    unknown = false;
+                    asks = false;
                 } else {
+                    String before = assistant.asking;
                     reply = assistant.respond(message);
-                    unknown = reply.equals(Assistant.UNKNOWN_ANSWER);
+                    asks = assistant.asking != null && !assistant.asking.equals(before);
                 }
+                final boolean working = Learner.hasWork(phone);
                 runOnUiThread(new Runnable() {
                     public void run() {
+                        if (working) askToNotify();  // it has a task to finish while you are away
                         bubble(reply, false);
                         if (speakReplies || heardByVoice) say(reply);
-                        if (unknown) {  // one tap to teach: the question is ready, type the answer
-                            String q = Alphabet.normalize(message).toLowerCase().trim();
-                            input.setText("/teach " + q + " = ");
-                            input.setSelection(input.getText().length());
-                            hint("type the answer after = and send, and i will remember it.");
-                        }
+                        if (asks) hint("just tell me the answer (or say: i don't know), and i will remember it.");
                     }
                 });
+            }
+        });
+    }
+
+    /** Morpheus speaking up on its own: news about your questions, or a question of its own. */
+    void curious(final String said) {
+        if (said == null || said.isEmpty()) return;
+        runOnUiThread(new Runnable() {
+            public void run() {
+                bubble(said, false);
+                if (speakReplies) say(said);
+                if (assistant != null && assistant.asking != null) hint("just tell me the answer, and i will remember it.");
             }
         });
     }

@@ -17,6 +17,8 @@ import java.util.Map;
  *   logits    <brain.bin> <ids,comma,separated>   logits after feeding the ids one by one
  *   generate  <brain.bin> <prompts.txt>           one reply per prompt ("\n" written as \n)
  *   assistant <brain.bin> <messages.txt> <now>    one assistant reply per message, fixed clock
+ *                                                 (-Darticles=dir: the internet is on, pages come from dir)
+ *   reason    <sentences.txt> <question...>       reasoned answers, then the questions its gaps raise
  */
 public class Harness {
 
@@ -36,6 +38,75 @@ public class Harness {
         if (args[0].equals("facts")) {  // facts <title> <article.txt>: one "question \t answer" per line
             String text = new String(Files.readAllBytes(Paths.get(args[2])), StandardCharsets.UTF_8);
             for (String[] f : ai.morpheus.Reader.facts(args[1], text)) out.append(f[0]).append('\t').append(f[1]).append('\n');
+            System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            return;
+        }
+        if (args[0].equals("reason")) {  // reason <sentences.txt> <question...>
+            ai.morpheus.Reasoner r = new ai.morpheus.Reasoner(lines(args[1]));
+            for (int i = 2; i < args.length; i++) {
+                ai.morpheus.Reasoner.Answer a = r.answer(args[i]);
+                out.append(a == null ? "null" : (a.proven ? "proven: " : "partial: ") + a.text).append('\n');
+            }
+            for (String q : r.gaps(10, new java.util.HashSet<String>())) out.append("gap: ").append(q).append('\n');
+            System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            return;
+        }
+        if (args[0].equals("work")) {  // work <runs> [message...]: background research runs on -Dwonders / -Dinterests
+            final Map<String, List<String>> store = new HashMap<>();
+            final List<String> lib = new ArrayList<>();
+            ai.morpheus.Learner.World world = new ai.morpheus.Learner.World() {
+                public List<String> readList(String name) {
+                    return new ArrayList<>(store.containsKey(name) ? store.get(name) : new ArrayList<String>());
+                }
+                public void writeList(String name, List<String> items) { store.put(name, new ArrayList<>(items)); }
+                public boolean internetAllowed() { return true; }
+                public String[] lookup(String topic) { return null; }
+                public String randomArticle() { return null; }
+                public String[] article(String topic) { return page(topic); }
+                public List<String> search(String query) { return Harness.search(query); }
+                public String fetchText(String url) { return null; }
+                public List<String> library() { return new ArrayList<>(lib); }
+                public void addToLibrary(String text) { lib.add(0, text); }
+                public long now() { return 1790000000000L; }
+            };
+            ai.morpheus.Curiosity c = new ai.morpheus.Curiosity(world);
+            if (System.getProperty("wonders") != null) for (String q : System.getProperty("wonders").split("\\|")) c.wonder(q, "", "you");
+            if (System.getProperty("interests") != null) {
+                List<String> q = new ArrayList<>();
+                for (String t : System.getProperty("interests").split(",")) q.add(t + "\t0");
+                store.put("reading_queue", q);
+            }
+            ai.morpheus.Learner.Progress quiet = new ai.morpheus.Learner.Progress() {
+                public void update(String message) { }
+                public boolean cancelled() { return false; }
+            };
+            for (int run = 1; run <= Integer.parseInt(args[1]); run++) {
+                ai.morpheus.Learner.Result r = new ai.morpheus.Learner().research(world, quiet);
+                out.append("run ").append(run).append(": found ").append(r.found).append(" read ").append(r.reports.size())
+                   .append(" stuck ").append(r.stuck).append(" more ").append(ai.morpheus.Learner.hasWork(world)).append('\n');
+            }
+            Brain brain;
+            try (FileInputStream in = new FileInputStream(System.getProperty("brain"))) {
+                brain = new Brain(in);
+            }
+            Assistant a = new Assistant(brain, new Assistant.Platform() {  // what it tells you afterwards
+                public long now() { return 1790000000000L; }
+                public List<String> readList(String name) { return world.readList(name); }
+                public void writeList(String name, List<String> items) { world.writeList(name, items); }
+                public boolean setAlarm(int hour, int minute, String message) { return false; }
+                public boolean setTimer(int seconds, String message) { return false; }
+                public boolean openUrl(String url) { return false; }
+                public int[] battery() { return null; }
+                public boolean internetAllowed() { return true; }
+                public String[] lookup(String topic) { return null; }
+                public List<String> library() { return new ArrayList<>(lib); }
+                public void addToLibrary(String text) { lib.add(0, text); }
+                public void workInBackground() { }
+            });
+            out.append(a.greet()).append('\n');
+            for (int i = 2; i < args.length; i++) out.append(a.respond(args[i])).append('\n');
             System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
             System.out.flush();
             return;
@@ -60,12 +131,22 @@ public class Harness {
                 for (float v : logits) out.append(v).append('\n');
                 break;
             }
+            case "confidence": {  // confidence <brain.bin> <exam.txt>: right?, confidence per exam question
+                for (String line : lines(args[2])) {
+                    String[] p = line.split("\t");
+                    String prompt = p[1].replace("\\n", "\n"), answer = p[2].replace("\\n", "\n").replace("\n", "");
+                    String said = brain.generate("\n" + prompt, 128);
+                    out.append(p[0]).append('\t').append(said.equals(answer)).append('\t').append(brain.lastConfidence).append('\n');
+                }
+                break;
+            }
             case "generate":
                 for (String line : lines(args[2])) out.append(escape(brain.generate(unescape(line), 128))).append('\n');
                 break;
             case "assistant": {
                 final long now = Long.parseLong(args[3]);
                 final Map<String, List<String>> store = new HashMap<>();
+                final List<String> lib = new ArrayList<>();
                 Assistant a = new Assistant(brain, new Assistant.Platform() {
                     public long now() { return now; }
                     public List<String> readList(String name) {
@@ -76,11 +157,19 @@ public class Harness {
                     public boolean setTimer(int seconds, String message) { return false; }
                     public boolean openUrl(String url) { return false; }
                     public int[] battery() { return null; }
-                    public boolean internetAllowed() { return false; }
-                    public String[] lookup(String topic) { return null; }
-                    public List<String> library() { return new ArrayList<>(); }
+                    public boolean internetAllowed() { return System.getProperty("articles") != null; }
+                    public String[] lookup(String topic) {
+                        String[] page = page(topic);
+                        return page == null ? null : new String[]{page[0], page[1]};
+                    }
+                    public List<String> library() { return new ArrayList<>(lib); }
+                    public void addToLibrary(String text) { lib.add(0, text); }
+                    public void workInBackground() { }
                 });
-                for (String line : lines(args[2])) out.append(escape(a.respond(line))).append('\n');
+                for (String line : lines(args[2])) {
+                    if (line.equals("/greet")) out.append(escape(a.greet())).append('\n');
+                    else out.append(escape(a.respond(line))).append('\n');
+                }
                 break;
             }
             case "grads": {  // grads <brain.bin> <batch.txt> [<soft.txt> <alpha,alpha,..>]
@@ -138,23 +227,17 @@ public class Harness {
                     public boolean internetAllowed() { return System.getProperty("articles") != null; }
                     public String[] lookup(String topic) { return null; }
                     public String randomArticle() { return null; }
-                    public String[] article(String topic) {
-                        String dir = System.getProperty("articles");
-                        if (dir == null) return null;
-                        try {
-                            java.io.File f = new java.io.File(dir, topic.toLowerCase().replace(' ', '_') + ".txt");
-                            if (!f.exists()) return null;
-                            List<String> ls = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
-                            return new String[]{ls.get(0), ls.get(1), ls.size() > 2 ? ls.get(2).replace('|', '\n') : ""};
-                        } catch (Exception e) {
-                            return null;
-                        }
-                    }
+                    public String[] article(String topic) { return page(topic); }
+                    public List<String> search(String query) { return Harness.search(query); }
                     public String fetchText(String url) { return null; }
                     public List<String> library() { return new ArrayList<>(lib); }
                     public void addToLibrary(String text) { lib.add(0, text); }
                     public long now() { return 0; }
                 };
+                if (System.getProperty("wonders") != null) {  // questions it could not answer before this session
+                    ai.morpheus.Curiosity c = new ai.morpheus.Curiosity(world);
+                    for (String q : System.getProperty("wonders").split("\\|")) c.wonder(q, "", "you");
+                }
                 if (System.getProperty("interests") != null) {  // browsing: interests to read about, no taught facts
                     List<String> q = new ArrayList<>();
                     for (String t : System.getProperty("interests").split(",")) q.add(t + "\t0");
@@ -203,8 +286,12 @@ public class Harness {
                     public boolean internetAllowed() { return false; }
                     public String[] lookup(String topic) { return null; }
                     public List<String> library() { return new ArrayList<>(lib); }
+                    public void addToLibrary(String text) { lib.add(0, text); }
+                    public void workInBackground() { }
                 });
                 for (int i = 5; i < args.length; i++) out.append("assistant: ").append(asst.respond(args[i])).append('\n');
+                if (store.containsKey("curiosity"))
+                    for (String w : store.get("curiosity")) out.append("curiosity: ").append(w).append('\n');
                 break;
             }
             default:
@@ -212,6 +299,45 @@ public class Harness {
         }
         System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
         System.out.flush();
+    }
+
+    /** A full-text search over the -Darticles pages: titles covering at least half the query's words, best first. */
+    static List<String> search(String query) {
+        List<String> out = new ArrayList<>();
+        String dir = System.getProperty("articles");
+        java.io.File[] files = dir == null ? null : new java.io.File(dir).listFiles();
+        if (files == null) return out;
+        final Map<String, Integer> score = new HashMap<>();
+        java.util.Set<String> words = Assistant.keywordsOf(query);
+        Arrays.sort(files);
+        for (java.io.File f : files) {
+            try {
+                List<String> ls = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+                String text = (ls.get(0) + " " + ls.get(1)).toLowerCase();
+                int n = 0;
+                for (String w : words) if (text.contains(w)) n++;
+                if (n * 2 >= words.size() && n > 0) { out.add(ls.get(0)); score.put(ls.get(0), n); }
+            } catch (Exception ignored) {
+            }
+        }
+        java.util.Collections.sort(out, new java.util.Comparator<String>() {
+            public int compare(String a, String b) { return score.get(b) - score.get(a); }
+        });
+        return out;
+    }
+
+    /** A test page from -Darticles: {title, text, links one per line}, or null. */
+    static String[] page(String topic) {
+        String dir = System.getProperty("articles");
+        if (dir == null) return null;
+        try {
+            java.io.File f = new java.io.File(dir, topic.toLowerCase().replace(' ', '_') + ".txt");
+            if (!f.exists()) return null;
+            List<String> ls = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+            return new String[]{ls.get(0), ls.get(1), ls.size() > 2 ? ls.get(2).replace('|', '\n') : ""};
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** batch.txt: one row per line, "x ids ; y ids" */

@@ -242,6 +242,18 @@ public final class Brain {
         return ids;
     }
 
+    /**
+     * How sure the brain was of its last answer: the lowest probability it gave to any character it
+     * chose (including where it chose to stop). Metacognition at its most basic.
+     */
+    public volatile float lastConfidence = 1f;
+
+    static float chosenProbability(float[] logits, int best) {
+        double sum = 0;
+        for (float l : logits) sum += Math.exp(l - logits[best]);
+        return (float) (1.0 / sum);
+    }
+
     /** Greedy continuation of `text` up to (not including) a newline, like NumpyMorpheus.generate. */
     public String generate(String text, int maxNew) {
         int[] ids = encode(Alphabet.normalize(text));
@@ -251,9 +263,12 @@ public final class Brain {
         for (int i = start; i < ids.length; i++) logits = step(cache, ids[i]);
         maxNew = Math.min(maxNew, block - (ids.length - start));
         StringBuilder out = new StringBuilder();
+        float confidence = 1f;
         for (int n = 0; n < maxNew && logits != null; n++) {
             int best = 0;
             for (int i = 1; i < logits.length; i++) if (logits[i] > logits[best]) best = i;
+            confidence = Math.min(confidence, chosenProbability(logits, best));
+            lastConfidence = confidence;
             char c = CHARS.charAt(best);
             if (c == '\n') break;
             out.append(c);

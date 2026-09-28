@@ -17,7 +17,7 @@ files, from what you teach it, and from the internet only when you allow it. It 
 while charging, and it rolls back any session that makes it forget.
 
 **On Android:** tap to install **[Morpheus.apk](https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk)**
-(about 330 KB, brain included). The app has chat, voice and the assistant skills, and it **teaches
+(about 350 KB, brain included). The app has chat, voice and the assistant skills, and it **teaches
 itself while the phone charges**: from what you teach it, its own mistakes, its own curiosity
 (unanswered questions, looked up once you allow the internet), what you share with it, and what it
 **browses** ("learn about volcanoes": it reads Simple English Wikipedia, follows links, turns
@@ -25,6 +25,11 @@ sentences into questions to study a few at a time, and keeps every sentence in a
 so it can answer word for word from its reading). Its
 153 KB brain stays frozen, and new knowledge goes into small adapters (LoRA). Everything runs on
 the phone. See [android/README.md](android/README.md).
+
+It is **curious**: it notices when it is only guessing, says "i don't know yet" instead of making
+things up, and then goes to find out. It looks things up, keeps working on your questions in the
+background until they are answered, asks you when it is stuck, connects facts to reason about new
+questions, and asks questions of its own. See [Curiosity](#curiosity-the-smallest-version-of-a-mind-that-wants-to-know).
 
 ```
 you> what comes after k?
@@ -253,6 +258,129 @@ Morpheus answers first and a tool checks the answer. If the brain was wrong (in 
 once said "the bigger of 73 and 37 is 77"), you get the correct answer, and the correction is
 saved as a lesson for the next learning session. The brain learns from its own mistakes.
 
+## Curiosity: the smallest version of a mind that wants to know
+
+*In the Android app: [`Curiosity.java`](android/app/src/ai/morpheus/Curiosity.java),
+[`Reasoner.java`](android/app/src/ai/morpheus/Reasoner.java), and the assistant, learner and
+background job next to them. The Termux version still just says "i have not learned that yet".*
+
+"I don't know yet" is an allowed answer. Stopping there is not. Brains learn in a loop, and
+Morpheus runs the simplest version of each step of it:
+
+| step | in a brain | in Morpheus |
+|------|------------|-------------|
+| **1. Notice** | metacognition: the feeling of knowing, or of guessing | The brain's own probabilities. Its confidence is the lowest probability it gave any character it chose. Below 0.7 it says "i think …, but i am not sure yet, so i will check." Ask "how sure are you?" |
+| **2. Wonder** | a gap in what you know is itchy (information-gap curiosity); gaps next to what you already know itch most | Every question it could not answer, or was unsure of, becomes a *wonder* with an interest score. The score rises when the question comes up again, sits next to something it knows, or has a guess to check, and when it is new. It falls with each failed search. |
+| **3. Seek** | look it up, ask someone | With 🌐 on, it looks it up right away and names the page. If it can't find it, it keeps working on it in the background. When it's stuck it asks you ("do you know?"), and you answer in your own words. |
+| **4. Connect** | reasoning: new facts join old ones | A small knowledge graph from everything it read or was told answers questions no single sentence answers, and gives the reason. It also finds its own questions: France has a capital, and Spain is a country too, so what is the capital of Spain? |
+| **5. Consolidate** | sleep moves the day into long-term memory | The learning session while it charges trains what it found into its brain (the adapters), guarded by the exam, ending in a dream. |
+
+The loop closes when it finds the answer to something it guessed. It tells you whether the guess was
+right ("i thought … and i was wrong. i found out: …"). Checking a prediction against the world
+(prediction error) is how a brain learns what to trust.
+
+**Is its confidence real?** On all 280 exam questions, where the right answer is known:
+
+|                             | right answers (248) | wrong answers (32) |
+|-----------------------------|---------------------|--------------------|
+| median confidence           | 1.00                | 0.59               |
+| flagged as unsure (< 0.7)   | 8 (3%)              | 29 (91%)           |
+
+On everyday questions:
+
+- "what do cows eat?" gets "a mow has 6 colors." at 49%, and "what color is a tomato?" gets
+  "a tomatoes are red." at 68%. Both are flagged.
+- What it knows ("grass is green.", "a spider has 8 legs.") sits at 89–99%.
+- It isn't perfect. "what color is a banana?" gets "a banana is a food." at 99.6%: a confident
+  answer to a different question.
+- Spelling and math don't need a feeling. They are checked exactly: the calculator, and now
+  spelling letter by letter (it had spelled a new word "o h u t u k" for "ohutuz", at 29%).
+
+On the real brain (from the tests):
+
+```
+you> what is the capital of spain?
+morpheus> i don't know yet, but i want to find out. do you know? (or tap the globe, and i will look it up.)
+you> madrid is the capital of spain.
+morpheus> thank you! now i know: madrid is the capital of spain.
+you> what do cows eat?
+morpheus> i think a mow has 6 colors. but i am not sure yet, so i will check.
+you> how sure are you?
+morpheus> not very: about 49% sure, so i will check.
+you> what is the tallest mountain?
+morpheus> i don't know yet, but i want to find out. ...
+you> hello
+morpheus> hello! ask me about letters, numbers, words or math.
+you> mount everest is the tallest mountain.
+morpheus> oh! that answers what i was wondering: what is the tallest mountain? thank you!
+```
+
+With the internet on (with stand-in Wikipedia pages in the tests):
+
+```
+you> what is a volcano?
+morpheus> i did not know, so i looked it up: a volcano is a mountain where lava comes out of the ground. (simple wikipedia: volcano)
+you> is the eiffel tower in paris?
+morpheus> yes. the eiffel tower is in paris.
+you> find out the capital of atlantis
+morpheus> ok! i am on it: what is the capital of atlantis? i will keep working on it in the background until i find out, and tell you.
+```
+
+**Reasoning.** From "paris is the capital and largest city of france.", "the eiffel tower is a famous
+iron tower in paris.", "france is a country in western europe.", "spain is a country in southern
+europe.", "a volcano is a mountain where lava comes out of the ground." and "a mountain is a landform
+that rises high above the land around it.":
+
+| question | answer |
+|----------|--------|
+| where is the eiffel tower? | the eiffel tower is in paris, which is in france, which is in western europe. |
+| is paris in europe? | yes. paris is in france and france is in western europe. |
+| is paris in spain? | no. paris is in france, and france and spain are different countries. |
+| is a volcano a landform? | yes. a volcano is a mountain and a mountain is a landform. |
+| is paris a country? | i know paris is a capital, but not if it is a country. |
+| *its own questions* | what is the capital of spain? what is the largest city of spain? what is a landform? ... |
+
+The world is open: something it can't prove is "not yet known", never "no". The one exception is
+that a place is in only one country, city or continent.
+
+**Thinking it through.** The curriculum never asked a yes/no question (0 of its 1,200 exam prompts).
+So when the brain answers one without a "yes" or a "no", it has answered something else. Asked "is
+the eiffel tower in france?", it once said "france is a food.", confidently. Now a reply that doesn't
+fit the question counts as not knowing. First, though, it rephrases the question as one it was
+taught, asks its own brain quietly, and reasons from that answer if it is sure of it:
+
+| question | how | answer |
+|----------|-----|--------|
+| is a cat an animal? | "what is a cat?" → a cat is an animal. | yes. a cat is an animal. |
+| is the sky blue? | "what color is the sky?" → the sky is blue. | yes. the sky is blue. |
+| is grass blue? | "what color is grass?" → grass is green. | i learned that grass is green. |
+| is a dog a plant? | "what is a dog?" → a dog is an animal. | i know a dog is an animal, but not if it is a plant. i don't know yet… |
+
+**Tasks: it keeps working until they are done.** "find out who invented the telephone", "learn about
+volcanoes", and every question it could not answer are tasks. With 🌐 on, a background job (Android's
+JobScheduler: it needs a network and runs with the app closed) works on each task until it is done:
+
+1. First it reads the article about the question's topic ("how tall is the eiffel tower" → Eiffel Tower).
+2. About 20 minutes later, it runs a full-text search for the whole question.
+3. About 40 minutes after that, it searches for the question's key words.
+4. If it still has nothing, it stops and asks you: "i have been wondering: … do you know?"
+
+In the tests, run 2 found the Eiffel Tower's height on the page about *Paris*. After run 3 it gave up
+on Atlantis, asked, and the job stopped by itself because nothing was left to do.
+
+When it finishes a task while you are away, you get a notification. When you're looking, it tells you
+in the chat. "what are you working on?" lists the tasks, and "never mind …" cancels one. The research
+is light: a few pages per run. Training the brain still waits for the charger, or for 🧠, which now
+also keeps going in the background if you close the app.
+
+Honest limits:
+
+- Confidence is how sure the brain is of its characters, not proof of truth.
+- The knowledge graph only reads simple sentences ("X is a Y", "X is in Y", "X is the Y of Z").
+- Search can find the wrong page. Answers always come with the page they are from.
+- The environment these tests ran in could not reach Wikipedia, so the live lookups (including the new
+  full-text search) are tested only with stand-in pages shaped like the real API's answers.
+
 ## Lifelong learning, on any device
 
 [`morpheus/learn.py`](morpheus/learn.py) and [`morpheus/grad.py`](morpheus/grad.py). Backpropagation for Morpheus is written by
@@ -328,8 +456,8 @@ catches facts that contradict each other, for example a prompt with two possible
 ## Honest limits, and how to grow
 
 - Morpheus knows what its curriculum teaches, what you teach it, and what it reads. Anything
-  else gets "i have not learned that yet". A tiny model that knows its limits beats one
-  that invents answers.
+  else gets "i don't know yet" (in the app, followed by an effort to find out; in Termux, "i have
+  not learned that yet"). A tiny model that knows its limits beats one that invents answers.
 - Reading teaches it words and style far more than facts. A 0.7M-parameter model can't
   memorize an encyclopedia. For facts that must be right, use `teach`, which it studies until
   it answers them.
@@ -359,7 +487,7 @@ morpheus/
   __main__.py     the `python -m morpheus` command line
 brains/morpheus-nano.morph   the trained brain (ternary, 153 KB, 97.8%)
 brains/morpheus-nano-binary.morph, brains/morpheus-loop.morph   extreme options (100 KB, 85 KB)
-android/        Morpheus.apk, the app source (android/app: Java brain + assistant + UI,
-                build.sh), the Termux installer, learning job and phone guide
-tests/test_morpheus.py, tests/test_device.py
+android/        Morpheus.apk, the app source (android/app: Java brain + assistant + UI, curiosity,
+                reasoning, background jobs, build.sh), the Termux installer, learning job and phone guide
+tests/test_morpheus.py, tests/test_device.py, tests/test_android.py (the app's Java, on a plain JVM)
 ```

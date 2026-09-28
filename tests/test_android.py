@@ -6,6 +6,7 @@ Needs a JDK (javac, java); skipped otherwise. Run with:  python -m unittest test
 import datetime as dt
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -20,12 +21,21 @@ sys.path.insert(0, os.path.join(REPO, "android", "app"))
 from export_brain import convert  # noqa: E402
 from morpheus.assistant import Assistant  # noqa: E402
 from morpheus.compress import export, load  # noqa: E402
-from morpheus.curriculum import STAGES, exam  # noqa: E402
+from morpheus.curriculum import STAGES, UNKNOWN_ANSWER, exam  # noqa: E402
 from morpheus.learn import Home  # noqa: E402
 from morpheus.runtime import NumpyMorpheus  # noqa: E402
 
 SHIPPED = os.path.join(REPO, "brains", "morpheus-nano.morph")
 NO_JDK = shutil.which("javac") is None or shutil.which("java") is None
+
+
+def plain(reply):
+    """The app says when it does not know, or is not sure, and goes to find out; the Termux assistant
+    just answers. Undo that to compare what the two brains said."""
+    if reply.startswith("i don't know yet"):
+        return UNKNOWN_ANSWER
+    m = re.fullmatch(r"i think (.*) but i am not sure yet, so i will check\.", reply)
+    return m.group(1) if m else reply
 
 
 class TestApk(unittest.TestCase):
@@ -126,7 +136,159 @@ class TestJavaBrain(unittest.TestCase):
         want = [py.respond(m).replace("\n", "\\n") for m in messages]
         got = self.java("assistant", self.brain_bin, self.lines_file(messages), str(int(clock.timestamp() * 1000)))
         for m, g, w in zip(messages, got, want):
-            self.assertEqual(g, w, m)
+            self.assertEqual(plain(g), w, m)
+
+    # ---------------------------------------------------------------- curiosity
+
+    def converse(self, messages, articles=None):
+        props = [f"-Darticles={articles}"] if articles else []
+        out = subprocess.run(["java", *props, "-cp", self.tmp, "Harness", "assistant", self.brain_bin,
+                              self.lines_file(messages), "1790000000000"], check=True, capture_output=True, env=self.env)
+        return dict(zip(range(len(messages)), out.stdout.decode().split("\n")))
+
+    def test_it_says_it_does_not_know_asks_and_learns_when_told(self):
+        got = self.converse([
+            "what is the capital of spain?", "what are you curious about?", "madrid is the capital of spain.",
+            "what is the capital of spain?", "how sure are you?",
+            "what is the tallest mountain?", "hello", "mount everest is the tallest mountain.",
+            "who wrote hamlet?", "i don't know", "/greet", "william shakespeare wrote hamlet.", "who wrote hamlet?",
+            "you are silly"])
+        self.assertTrue(got[0].startswith("i don't know yet, but i want to find out. do you know?"), got[0])
+        self.assertIn("what is the capital of spain?", got[1])
+        self.assertEqual(got[2], "thank you! now i know: madrid is the capital of spain.")  # the answer to its question
+        self.assertEqual(got[3], "madrid is the capital of spain.")
+        self.assertIn("taught", got[4])
+        # not asked, but a fact that answers what it was wondering
+        self.assertEqual(got[7], "oh! that answers what i was wondering: what is the tallest mountain? thank you!")
+        self.assertEqual(got[9], "that's ok! i will keep wondering, and look for it when i can.")
+        self.assertEqual(got[10], "i have been wondering: who wrote hamlet? do you know?")  # it asks on its own
+        self.assertEqual(got[12], "william shakespeare wrote hamlet.")
+        self.assertEqual(got[13], UNKNOWN_ANSWER)  # "you are ..." is about us, not a fact to keep
+
+    ENCYCLOPEDIA = {
+        "volcano": ("Volcano", "A volcano is a mountain where lava comes out of the ground. Volcanoes are found in "
+                    "many countries.", "Lava"),
+        "eiffel_tower": ("Eiffel Tower", "The Eiffel Tower is a famous iron tower in Paris. It is 330 metres tall. "
+                         "It was designed by Gustave Eiffel.", "Paris"),
+    }
+
+    def encyclopedia(self):
+        d = os.path.join(self.tmp, "encyclopedia")
+        os.makedirs(d, exist_ok=True)
+        for name, (title, text, links) in self.ENCYCLOPEDIA.items():
+            with open(os.path.join(d, name + ".txt"), "w") as f:
+                f.write(f"{title}\n{text}\n{links}\n")
+        return d
+
+    def test_it_looks_up_what_it_does_not_know(self):
+        got = self.converse(["what is a volcano?", "what is a volcano?", "how tall is the eiffel tower?",
+                             "who designed the eiffel tower?", "is the eiffel tower in paris?", "what did you find out?",
+                             "what is the capital of atlantis?"], articles=self.encyclopedia())
+        self.assertEqual(got[0], "i did not know, so i looked it up: a volcano is a mountain where lava comes out of the "
+                                 "ground. (simple wikipedia: volcano)")
+        self.assertEqual(got[1], "a volcano is a mountain where lava comes out of the ground.")  # and remembers it
+        self.assertEqual(got[2], "i did not know, so i looked it up: the eiffel tower is 330 metres tall. "
+                                 "(simple wikipedia: eiffel tower)")
+        self.assertEqual(got[3], "the eiffel tower was designed by gustave eiffel.")  # from the page it kept
+        self.assertEqual(got[4], "yes. the eiffel tower is in paris.")  # reasoning over what it read
+        self.assertIn("how tall is the eiffel tower? the eiffel tower is 330 metres tall.", got[5])
+        self.assertTrue(got[6].startswith("i don't know yet. i looked, but could not find it yet. i will keep looking in the background"), got[6])
+
+    def test_tasks_you_give_it(self):
+        got = self.converse(["find out who designed the eiffel tower", "find out the capital of atlantis",
+                             "what are you working on?", "never mind the capital of atlantis", "what are you working on?",
+                             "learn about volcanoes"], articles=self.encyclopedia())
+        self.assertEqual(got[0], "i found out: the eiffel tower was designed by gustave eiffel. (simple wikipedia: eiffel tower)")
+        self.assertEqual(got[1], "ok! i am on it: what is the capital of atlantis? i will keep working on it in the background "
+                                 "until i find out, and tell you.")
+        self.assertEqual(got[2], "i am working on: finding out what is the capital of atlantis?")
+        self.assertEqual(got[3], "ok, i stopped working on that.")
+        self.assertTrue(got[4].startswith("nothing right now."), got[4])
+        self.assertTrue(got[5].startswith("ok! i am reading about volcanoes in the background."), got[5])
+
+    def test_it_keeps_working_in_the_background_until_done(self):
+        """Each run looks harder (the article, then a full-text search, then key words); after three
+        misses it asks you. Then there is nothing left to do, and the work stops."""
+        out = subprocess.run(["java", f"-Darticles={self.article_dir()}", f"-Dbrain={self.brain_bin}",
+                              "-Dwonders=how tall is the eiffel tower|what is the capital of atlantis",
+                              "-Dinterests=france,narnia", "-cp", self.tmp, "Harness", "work", "3", "what are you working on?"],
+                             check=True, capture_output=True, env=self.env).stdout.decode().split("\n")
+        self.assertEqual(out[0], "run 1: found [] read 2 stuck [] more true")  # read what you asked; first looks miss
+        self.assertEqual(out[1], "run 2: found [how tall is the eiffel tower? the eiffel tower is 330 metres tall.] "
+                                 "read 0 stuck [] more true")  # a full-text search found it on the page about paris
+        self.assertEqual(out[2], "run 3: found [] read 0 stuck [what is the capital of atlantis?] more false")
+        self.assertEqual(out[3], 'you asked me to learn about france. i read "france": france is a country in western europe. '
+                                 "i found 2 facts to study the next time you charge me.")
+        self.assertEqual(out[4], "you asked me to learn about narnia, but i could not find anything to read about it.")
+        self.assertEqual(out[5], 'you asked me "how tall is the eiffel tower?" i found out: the eiffel tower is 330 metres '
+                                 "tall. (simple wikipedia: paris)")
+        self.assertEqual(out[6], "i have been wondering: what is the capital of atlantis? i could not find it. do you know?")
+        self.assertEqual(out[7], "i need your help with: what is the capital of atlantis? do you know?")
+
+    def test_it_notices_when_it_is_guessing(self):
+        """Metacognition: an answer the brain was unsure of (by its own probabilities) is not stated as fact."""
+        guesses = ["what do cows eat?", "what color is a tomato?"]
+        exam_file = self.lines_file([f"talk\tuser: {q}\\nmorpheus: \tx" for q in guesses])
+        sure = [float(line.split("\t")[2]) for line in self.java("confidence", self.brain_bin, exam_file)]
+        sure_q = [q for q in ["what color is grass?"]]
+        unsure = [q for q, c in zip(guesses, sure) if c < 0.7]
+        self.assertTrue(unsure, sure)
+        got = self.converse([unsure[0], "how sure are you?", "what are you curious about?"] + sure_q + ["how sure are you?"])
+        self.assertTrue(got[0].startswith("i think ") and got[0].endswith(" but i am not sure yet, so i will check."), got[0])
+        self.assertTrue(got[1].startswith("not very: about "), got[1])
+        self.assertIn(unsure[0], got[2])  # it will check
+        self.assertEqual(got[3], "grass is green.")  # and a sure answer is just an answer
+        self.assertTrue(got[4].startswith("about 9"), got[4])
+
+    def test_it_thinks_yes_no_questions_through(self):
+        """It was never taught a yes/no question: it rephrases one as a question it was taught, and reasons."""
+        got = self.converse(["is a cat an animal?", "is the sky blue?", "is grass blue?", "is a dog a plant?",
+                             "is the eiffel tower in france?"])
+        self.assertEqual(got[0], "yes. a cat is an animal.")
+        self.assertEqual(got[1], "yes. the sky is blue.")
+        self.assertEqual(got[2], "i learned that grass is green.")
+        self.assertTrue(got[3].startswith("i know a dog is an animal, but not if it is a plant. i don't know yet"), got[3])
+        self.assertTrue(got[4].startswith("i don't know yet"), got[4])  # never "france is a food."
+
+    def test_reasoning_connects_what_it_knows(self):
+        facts = self.lines_file([
+            "paris is the capital and largest city of france.", "the eiffel tower is a famous iron tower in paris.",
+            "france is a country in western europe.", "spain is a country in southern europe.",
+            "a volcano is a mountain where lava comes out of the ground.",
+            "a mountain is a landform that rises high above the land around it.", "lava is hot melted rock.",
+            "paris is on the seine river.", "the sky is blue."])
+        got = self.java("reason", facts, "where is the eiffel tower?", "is the eiffel tower in france?", "is paris in europe?",
+                        "is paris in spain?", "is a volcano a landform?", "are volcanoes mountains?", "is paris a country?",
+                        "is madrid in spain?", "is the sky a color?")
+        self.assertEqual(got[:9], [
+            "proven: the eiffel tower is in paris, which is in france, which is in western europe.",
+            "proven: yes. the eiffel tower is in paris and paris is in france.",
+            "proven: yes. paris is in france and france is in western europe.",
+            "proven: no. paris is in france, and france and spain are different countries.",
+            "proven: yes. a volcano is a mountain and a mountain is a landform.",
+            "proven: yes. a volcano is a mountain.",
+            "partial: i know paris is a capital, but not if it is a country.",  # open world: not "no"
+            "null", "null"])
+        gaps = [line[5:] for line in got if line.startswith("gap: ")]
+        self.assertEqual(gaps[:2], ["what is the capital of spain", "what is the largest city of spain"])  # analogy
+        self.assertIn("what is a landform", gaps)  # the edge of what it knows
+        self.assertNotIn("what is the capital of france", gaps)
+
+    def test_learning_session_goes_after_its_questions(self):
+        from export_lessons import export as export_lessons
+        export_lessons(self.tmp, per_stage=50, exam_per_stage=5)
+        morph = self.tiny_bin("ternary")
+        out = subprocess.run(["java", f"-Darticles={self.article_dir()}", "-Drank=4",
+                              "-Dwonders=who designed the eiffel tower|what is the capital of atlantis", "-cp", self.tmp,
+                              "Harness", "session", morph + ".bin", os.path.join(self.tmp, "lessons.txt"),
+                              os.path.join(self.tmp, "exam.txt"), "4", "hello"],
+                             check=True, capture_output=True, env=self.env).stdout.decode().split("\n")
+        self.assertIn("i was curious about 2 questions and found out 1.", out[5])
+        self.assertIn('assistant: you asked me "who designed the eiffel tower?" i found out: the eiffel tower was designed '
+                      'by gustave eiffel. (simple wikipedia: eiffel tower)', out)  # told the next time you talk
+        states = {line.split("\t")[0][len("curiosity: "):]: line.split("\t") for line in out if line.startswith("curiosity: ")}
+        self.assertEqual(states["who designed the eiffel tower"][1], "told")
+        self.assertEqual(states["what is the capital of atlantis"][1:5], ["open", "you", "1", "1"])  # tried once
 
     # ---------------------------------------------------------------- learning on the phone
 
@@ -308,7 +470,9 @@ class TestJavaBrain(unittest.TestCase):
         self.assertIn("i read about paris, eiffel tower, france", summary.lower())
         absorbed = next(line for line in out if line.startswith("absorbed:"))
         self.assertNotIn("absorbed: 0", absorbed)
-        self.assertIn("assistant: the eiffel tower is 330 metres tall.", out)  # recalled from what it read
+        self.assertIn('assistant: you asked me to learn about paris. i read "paris": paris is the capital and largest city '
+                      "of france. i found 6 facts to study the next time you charge me.", out)  # the task is done: it says so
+        self.assertIn("the eiffel tower is 330 metres tall.", out)  # recalled from what it read
 
     def py_brain(self):
         class Brain:  # the NumpyBrain interface that Conversation expects

@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 public final class Learner {
 
     /** What learning needs from the device. */
-    public interface World {
+    public interface World extends Curiosity.Store {
         List<String> readList(String name);
         void writeList(String name, List<String> items);
         boolean internetAllowed();
@@ -39,6 +39,7 @@ public final class Learner {
         String randomArticle();                 // a short article, or null
         String[] article(String topic);         // {title, text, links one per line}, or null
         String fetchText(String url);           // the text of a web page, or null
+        List<String> search(String query);      // titles of pages about it, best first (a full-text search)
         List<String> library();                 // everything read so far, newest first
         void addToLibrary(String text);
         long now();
@@ -52,8 +53,10 @@ public final class Learner {
     public static final class Result {
         public boolean kept;
         public float before, after, taughtBefore = -1, taughtAfter = -1, readBefore = -1, readAfter = -1;
-        public int steps, newSources, newFacts;
-        public List<String> titles = new ArrayList<>();
+        public int steps, newSources, newFacts, wondered;
+        public List<String> titles = new ArrayList<>(), foundOut = new ArrayList<>();
+        /** For a notification: "question? answer" found, things read as asked, questions it now needs help with. */
+        public List<String> found = new ArrayList<>(), reports = new ArrayList<>(), stuck = new ArrayList<>();
         public String summary;
     }
 
@@ -61,6 +64,8 @@ public final class Learner {
     public int pagesPerSession = 6;
     /** New facts from reading studied per session: a small brain learns a few at a time, not a page. */
     public int studyPerSession = 4;
+    /** Its own questions (from gaps in what it knows): a few per session, after yours. */
+    public int ownQuestionsPerSession = 2;
 
     static final Set<String> STOPWORDS = new HashSet<>(Arrays.asList(
         "what who where when which how is are was were the a an of to in on for do does did you your my me i it and or"
@@ -73,6 +78,9 @@ public final class Learner {
     /** No single skill (a section of the exam) may fall further than this: averages hide a lot. */
     public float maxSkillDrop = 0.075f;
     final Random rng = new Random();
+
+    /** Research only (no studying): for working on your tasks in the background. See {@link #research}. */
+    public Learner() {}
 
     /** lessons: one per line, '\t' inside a lesson is a newline. exam: stage \t prompt \t answer, "\n" escaped. */
     public Learner(InputStream lessonsIn, InputStream examIn) throws IOException {
@@ -102,36 +110,95 @@ public final class Learner {
     }
 
     /**
-     * Browse and absorb (only if the internet is allowed): its own curiosity first (questions it
-     * could not answer), then your interests ("learn about volcanoes") and a few links from each
-     * page, then pages you shared. Every page goes into its memory, and its simple sentences
-     * become questions and answers to study.
+     * Browse and absorb (only if the internet is allowed): its curiosity first (the questions it
+     * could not answer, most interesting first, then a few of its own), then your interests ("learn
+     * about volcanoes") and a few links from each page, then pages you shared. Every page goes into
+     * its memory, and its simple sentences become questions and answers to study.
      */
-    int gather(World world, Progress progress, Result res) {
+    int gather(World world, Progress progress, Result res) { return gather(world, progress, res, false); }
+
+    /**
+     * Work on your tasks, and only those, without studying: your questions, what you asked it to
+     * read, and pages you shared. Light work (a few pages), for the background job that keeps going
+     * until every task is done. The facts it finds are studied at the next learning session.
+     */
+    public Result research(World world, Progress progress) {
+        Result res = new Result();
+        gather(world, progress, res, true);
+        return res;
+    }
+
+    /** Is any task of yours still waiting (and can it work on it: the internet is allowed)? */
+    public static boolean hasWork(World world) {
+        if (!world.internetAllowed()) return false;
+        for (Curiosity.Wonder w : new Curiosity(world).tasks()) if (w.status.equals("open")) return true;
+        for (String q : world.readList("reading_queue")) if (q.endsWith("\t0") || !q.contains("\t")) return true;
+        return !world.readList("shared_links").isEmpty();
+    }
+
+    /** Where to look, harder each try: the article about it, then a full-text search, then its key words. */
+    static List<String> whereToLook(World world, Curiosity.Wonder w) {
+        if (w.tries == 0) return Curiosity.topics(w.question);
+        List<String> found = world.search(w.tries == 1 ? w.question : Assistant.join(" ", new ArrayList<>(Assistant.keywords(w.question))));
+        return found == null ? new ArrayList<String>() : found.subList(0, Math.min(3, found.size()));
+    }
+
+    int gather(World world, Progress progress, Result res, boolean background) {
         if (!world.internetAllowed()) return 0;
         int pages = 0;
         List<String> seen = world.readList("read_titles");
-        List<String> wonders = world.readList("wonders"), still = new ArrayList<>();
-        for (String q : wonders) {  // 1. its own curiosity
-            String topic = topicOf(q);
-            if (topic == null) continue;
-            if (pages >= pagesPerSession || progress.cancelled()) { still.add(q); continue; }
-            progress.update("wondering about " + topic + "\u2026");
-            String[] page = world.article(topic);
-            pages++;
-            if (page != null) absorb(world, page, q, seen, res);
+        Curiosity curiosity = new Curiosity(world);
+        if (!background) wonderAboutGaps(world, curiosity);
+        int own = 0;
+        for (Curiosity.Wonder w : curiosity.mostInteresting(pagesPerSession, Curiosity.known(world))) {  // 1. curiosity
+            if (pages >= pagesPerSession || progress.cancelled()) break;
+            if (w.origin.equals("itself") && (background || own++ >= ownQuestionsPerSession)) continue;
+            res.wondered++;
+            String answer = null, title = null;
+            for (String topic : whereToLook(world, w)) {
+                if (pages >= pagesPerSession) break;
+                progress.update("wondering: " + w.question + "?");
+                String[] page = world.article(topic);
+                pages++;
+                if (page == null) continue;
+                absorb(world, page, seen, res);
+                answer = answerFrom(page, w.question);
+                if (answer != null) { title = page[0]; break; }
+            }
+            if (answer == null) {  // three misses, and it asks you
+                if (curiosity.tried(w.question) && !w.origin.equals("itself")) res.stuck.add(w.question + "?");
+                continue;
+            }
+            if (answer.length() <= 120) teach(world, w.question, answer);
+            curiosity.found(w.question, answer, title == null ? "" : "simple wikipedia: " + title.toLowerCase(java.util.Locale.ROOT));
+            res.foundOut.add(w.question);
+            if (!w.origin.equals("itself")) res.found.add(w.question + "? " + answer);
         }
-        world.writeList("wonders", still);
-        List<String> queue = world.readList("reading_queue");  // 2. your interests, and where they lead
+        List<String> queue = world.readList("reading_queue"), later = new ArrayList<>();  // 2. your interests, and where they lead
         while (pages < pagesPerSession && !queue.isEmpty() && !progress.cancelled()) {
-            String[] entry = queue.remove(0).split("\t");
+            String line = queue.remove(0);
+            String[] entry = line.split("\t");
             int depth = entry.length > 1 ? Integer.parseInt(entry[1]) : 0;
-            if (seen.contains(entry[0].toLowerCase(java.util.Locale.ROOT))) continue;
+            if (background && depth > 0) { later.add(line); continue; }  // wandering off through links waits for a session
+            if (seen.contains(entry[0].toLowerCase(java.util.Locale.ROOT))) {
+                if (depth == 0) tell(curiosity, res, "you asked me to learn about " + entry[0] + ". i already read about it: ask me, what do you know about " + entry[0] + "?");
+                continue;
+            }
             progress.update("reading about " + entry[0] + "\u2026");
             String[] page = world.article(entry[0]);
             pages++;
-            if (page == null) continue;
-            absorb(world, page, null, seen, res);
+            if (page == null) {
+                if (depth == 0) tell(curiosity, res, "you asked me to learn about " + entry[0] + ", but i could not find anything to read about it.");
+                continue;
+            }
+            int factsBefore = res.newFacts;
+            absorb(world, page, seen, res);
+            if (depth == 0) {  // a task of yours: done
+                List<String> first = Reader.sentences(page[0], page[1]);
+                tell(curiosity, res, "you asked me to learn about " + entry[0] + ". i read \"" + page[0].toLowerCase(java.util.Locale.ROOT)
+                     + "\"" + (first.isEmpty() ? "" : ": " + first.get(0)) + " i found " + (res.newFacts - factsBefore)
+                     + " facts to study the next time you charge me.");
+            }
             if (depth < 2 && page.length > 2) {
                 int added = 0;
                 for (String link : page[2].split("\n")) {
@@ -142,31 +209,64 @@ public final class Learner {
                 }
             }
         }
+        later.addAll(queue);
+        queue = later;
         while (queue.size() > 40) queue.remove(queue.size() - 1);
         world.writeList("reading_queue", queue);
         List<String> links = world.readList("shared_links");  // 3. pages you shared
         for (String url : links) {
             String text = world.fetchText(url);
-            if (text != null && text.length() > 40) absorb(world, new String[]{null, text, ""}, null, seen, res);
+            if (text != null && text.length() > 40) {
+                absorb(world, new String[]{null, text, ""}, seen, res);
+                tell(curiosity, res, "i read the page you shared: " + url);
+            }
         }
         world.writeList("shared_links", new ArrayList<String>());
-        if (pages == 0 && links.isEmpty() && !progress.cancelled()) {  // 4. nothing asked: a little reading of its own
+        if (!background && pages == 0 && links.isEmpty() && !progress.cancelled()) {  // 4. nothing asked: a little reading of its own
             String text = world.randomArticle();
             if (text != null) {
                 int nl = text.indexOf('\n');
-                absorb(world, new String[]{nl > 0 ? text.substring(0, nl) : null, text, ""}, null, seen, res);
+                absorb(world, new String[]{nl > 0 ? text.substring(0, nl) : null, text, ""}, seen, res);
             }
         }
         world.writeList("read_titles", seen.size() > 500 ? seen.subList(seen.size() - 500, seen.size()) : seen);
         return res.newSources;
     }
 
+    static void tell(Curiosity curiosity, Result res, String line) {
+        curiosity.report(line);
+        res.reports.add(line);
+    }
+
+    /**
+     * Its own questions: what its knowledge raises (France has a capital and Spain is a country too:
+     * so what is the capital of Spain?), skipping what it already knows or already wonders about.
+     */
+    void wonderAboutGaps(World world, Curiosity curiosity) {
+        Set<String> skip = new HashSet<>();
+        for (String list : new String[]{"taught", "absorbed"})
+            for (String line : world.readList(list)) { String[] f = fact(line); if (f != null) skip.add(f[0]); }
+        for (Curiosity.Wonder w : curiosity.all()) skip.add(w.question);
+        Reasoner reasoner = new Reasoner(new Reader.Memory(world.library()).sentences);
+        for (String q : reasoner.gaps(3, skip)) curiosity.wonder(q, "", "itself");
+    }
+
+    /** The answer to a question in a page: a fact it states, else the sentence that covers the question. */
+    static String answerFrom(String[] page, String question) {
+        String q = Assistant.key(question);
+        for (String[] f : Reader.facts(page[0], page[1])) if (f[0].equals(q)) return f[1];
+        String hit = new Reader.Memory(Arrays.asList((page[0] != null ? page[0].toLowerCase(java.util.Locale.ROOT) + "\n" : "") + page[1]))
+            .recall(question);
+        if (hit == null) return null;
+        return Reader.shorten(hit) != null ? Reader.shorten(hit) : hit;
+    }
+
     /** Remember a page, and turn its simple sentences into questions and answers to study. */
-    void absorb(World world, String[] page, String wonder, List<String> seen, Result res) {
+    void absorb(World world, String[] page, List<String> seen, Result res) {
         String title = page[0], text = page[1];
         if (title != null) {
             seen.add(title.toLowerCase(java.util.Locale.ROOT));
-            res.titles.add(title);
+            if (!res.titles.contains(title)) res.titles.add(title);
         }
         world.addToLibrary((title != null ? title + "\n" : "") + text);
         res.newSources++;
@@ -178,15 +278,6 @@ public final class Learner {
         }
         while (absorbed.size() > 300) absorbed.remove(0);  // the most recent reading stays in play
         world.writeList("absorbed", absorbed);
-        if (wonder != null) {  // answer the question that made it curious
-            String q = Assistant.key(wonder), answer = null;
-            for (String[] f : Reader.facts(title, text)) if (f[0].equals(q)) { answer = f[1]; break; }
-            if (answer == null) {
-                List<String> sentences = Reader.sentences(title, text);
-                answer = sentences.isEmpty() ? null : Reader.shorten(sentences.get(0));
-            }
-            if (answer != null) teach(world, wonder, answer);
-        }
     }
 
     static void teach(World world, String question, String answer) {
@@ -448,6 +539,9 @@ public final class Learner {
         }
         long seconds = (System.currentTimeMillis() - started) / 1000;
         StringBuilder what = new StringBuilder();
+        if (res.wondered > 0)
+            what.append("i was curious about ").append(res.wondered).append(res.wondered == 1 ? " question" : " questions")
+                .append(" and found out ").append(res.foundOut.size()).append(". ");
         if (!res.titles.isEmpty())
             what.append("i read about ").append(Assistant.join(", ", res.titles.subList(0, Math.min(4, res.titles.size()))))
                 .append(res.titles.size() > 4 ? " and more" : "").append(" and found ").append(res.newFacts)
