@@ -6,6 +6,10 @@
 
 ---
 
+**Morpheus** lives in this fork: a tiny, low-energy language model that is raised from the ABCs and 1 2 3s instead of an internet-sized dataset, graduates each stage by passing an exam, compresses to a few hundred KB and runs with numpy alone. See [MORPHEUS.md](MORPHEUS.md).
+
+---
+
 **Update Nov 2025** nanoGPT has a new and improved cousin called [nanochat](https://github.com/karpathy/nanochat). It is very likely you meant to use/find nanochat instead. nanoGPT (this repo) is now very old and deprecated but I will leave it up for posterity.
 
 ---
