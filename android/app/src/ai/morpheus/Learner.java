@@ -37,6 +37,7 @@ public final class Learner {
         boolean internetAllowed();
         String[] lookup(String topic);          // {title, extract}, or null
         String randomArticle();                 // a short article, or null
+        String[] article(String topic);         // {title, text, links one per line}, or null
         String fetchText(String url);           // the text of a web page, or null
         List<String> library();                 // everything read so far, newest first
         void addToLibrary(String text);
@@ -50,10 +51,16 @@ public final class Learner {
 
     public static final class Result {
         public boolean kept;
-        public float before, after, taughtBefore = -1, taughtAfter = -1;
-        public int steps, newSources;
+        public float before, after, taughtBefore = -1, taughtAfter = -1, readBefore = -1, readAfter = -1;
+        public int steps, newSources, newFacts;
+        public List<String> titles = new ArrayList<>();
         public String summary;
     }
+
+    /** Pages read per session: enough to learn something, little enough for data and battery. */
+    public int pagesPerSession = 6;
+    /** New facts from reading studied per session: a small brain learns a few at a time, not a page. */
+    public int studyPerSession = 4;
 
     static final Set<String> STOPWORDS = new HashSet<>(Arrays.asList(
         "what who where when which how is are was were the a an of to in on for do does did you your my me i it and or"
@@ -63,6 +70,8 @@ public final class Learner {
     final List<String[]> exam = new ArrayList<>();    // {stage, prompt, answer}
     public int batch = 8, maxNewRows = 2;
     public float lr = 1e-3f, remember = 0.5f, maxForgetting = 0.02f;
+    /** No single skill (a section of the exam) may fall further than this: averages hide a lot. */
+    public float maxSkillDrop = 0.075f;
     final Random rng = new Random();
 
     /** lessons: one per line, '\t' inside a lesson is a newline. exam: stage \t prompt \t answer, "\n" escaped. */
@@ -92,35 +101,92 @@ public final class Learner {
         return m.group(4) != null ? m.group(4) : m.group(6);
     }
 
-    int gather(World world, Progress progress) {
-        int found = 0;
+    /**
+     * Browse and absorb (only if the internet is allowed): its own curiosity first (questions it
+     * could not answer), then your interests ("learn about volcanoes") and a few links from each
+     * page, then pages you shared. Every page goes into its memory, and its simple sentences
+     * become questions and answers to study.
+     */
+    int gather(World world, Progress progress, Result res) {
         if (!world.internetAllowed()) return 0;
+        int pages = 0;
+        List<String> seen = world.readList("read_titles");
         List<String> wonders = world.readList("wonders"), still = new ArrayList<>();
-        int looked = 0;
-        for (String q : wonders) {  // its own curiosity: questions it could not answer
+        for (String q : wonders) {  // 1. its own curiosity
             String topic = topicOf(q);
-            if (topic == null || looked >= 5 || progress.cancelled()) { if (topic != null) still.add(q); continue; }
-            looked++;
-            progress.update("looking up " + topic + "…");
-            String[] hit = world.lookup(topic);
-            if (hit == null) { still.add(q); continue; }
-            String answer = Assistant.firstSentences(hit[1], 220).toLowerCase(java.util.Locale.ROOT);
-            if (answer.length() <= 100) teach(world, q, Alphabet.normalize(answer));
-            world.addToLibrary(hit[0] + "\n" + hit[1]);
-            found++;
+            if (topic == null) continue;
+            if (pages >= pagesPerSession || progress.cancelled()) { still.add(q); continue; }
+            progress.update("wondering about " + topic + "\u2026");
+            String[] page = world.article(topic);
+            pages++;
+            if (page != null) absorb(world, page, q, seen, res);
         }
         world.writeList("wonders", still);
-        List<String> links = world.readList("shared_links");  // pages you shared
+        List<String> queue = world.readList("reading_queue");  // 2. your interests, and where they lead
+        while (pages < pagesPerSession && !queue.isEmpty() && !progress.cancelled()) {
+            String[] entry = queue.remove(0).split("\t");
+            int depth = entry.length > 1 ? Integer.parseInt(entry[1]) : 0;
+            if (seen.contains(entry[0].toLowerCase(java.util.Locale.ROOT))) continue;
+            progress.update("reading about " + entry[0] + "\u2026");
+            String[] page = world.article(entry[0]);
+            pages++;
+            if (page == null) continue;
+            absorb(world, page, null, seen, res);
+            if (depth < 2 && page.length > 2) {
+                int added = 0;
+                for (String link : page[2].split("\n")) {
+                    String l = link.trim().toLowerCase(java.util.Locale.ROOT);
+                    if (l.isEmpty() || l.contains(":") || seen.contains(l) || added >= 3) continue;
+                    queue.add(link.trim() + "\t" + (depth + 1));
+                    added++;
+                }
+            }
+        }
+        while (queue.size() > 40) queue.remove(queue.size() - 1);
+        world.writeList("reading_queue", queue);
+        List<String> links = world.readList("shared_links");  // 3. pages you shared
         for (String url : links) {
             String text = world.fetchText(url);
-            if (text != null && text.length() > 40) { world.addToLibrary(text); found++; }
+            if (text != null && text.length() > 40) absorb(world, new String[]{null, text, ""}, null, seen, res);
         }
         world.writeList("shared_links", new ArrayList<String>());
-        for (int i = 0; i < 3 && !progress.cancelled(); i++) {  // a little reading of its own
+        if (pages == 0 && links.isEmpty() && !progress.cancelled()) {  // 4. nothing asked: a little reading of its own
             String text = world.randomArticle();
-            if (text != null) { world.addToLibrary(text); found++; }
+            if (text != null) {
+                int nl = text.indexOf('\n');
+                absorb(world, new String[]{nl > 0 ? text.substring(0, nl) : null, text, ""}, null, seen, res);
+            }
         }
-        return found;
+        world.writeList("read_titles", seen.size() > 500 ? seen.subList(seen.size() - 500, seen.size()) : seen);
+        return res.newSources;
+    }
+
+    /** Remember a page, and turn its simple sentences into questions and answers to study. */
+    void absorb(World world, String[] page, String wonder, List<String> seen, Result res) {
+        String title = page[0], text = page[1];
+        if (title != null) {
+            seen.add(title.toLowerCase(java.util.Locale.ROOT));
+            res.titles.add(title);
+        }
+        world.addToLibrary((title != null ? title + "\n" : "") + text);
+        res.newSources++;
+        List<String> absorbed = world.readList("absorbed");
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (String f : absorbed) known.add(f.substring(0, Math.max(0, f.indexOf('\t'))));
+        for (String[] f : Reader.facts(title, text)) {
+            if (known.add(f[0])) { absorbed.add(f[0] + "\t" + f[1]); res.newFacts++; }
+        }
+        while (absorbed.size() > 300) absorbed.remove(0);  // the most recent reading stays in play
+        world.writeList("absorbed", absorbed);
+        if (wonder != null) {  // answer the question that made it curious
+            String q = Assistant.key(wonder), answer = null;
+            for (String[] f : Reader.facts(title, text)) if (f[0].equals(q)) { answer = f[1]; break; }
+            if (answer == null) {
+                List<String> sentences = Reader.sentences(title, text);
+                answer = sentences.isEmpty() ? null : Reader.shorten(sentences.get(0));
+            }
+            if (answer != null) teach(world, wonder, answer);
+        }
     }
 
     static void teach(World world, String question, String answer) {
@@ -184,6 +250,15 @@ public final class Learner {
     /** Fraction right: greedy decoding says the answer iff every answer position's argmax is right. */
     static float grade(final Trainer tr, final Map<String, float[]> W, List<String[]> questions) throws Exception {
         if (questions.isEmpty()) return -1;
+        int right = 0;
+        for (boolean ok : gradeEach(tr, W, questions)) if (ok) right++;
+        return (float) right / questions.size();
+    }
+
+    /** Right or wrong, per question. */
+    static boolean[] gradeEach(final Trainer tr, final Map<String, float[]> W, List<String[]> questions) throws Exception {
+        boolean[] out = new boolean[questions.size()];
+        if (questions.isEmpty()) return out;
         final int block = tr.base.block;
         ExecutorService pool = Executors.newFixedThreadPool(tr.threads);
         try {
@@ -204,25 +279,31 @@ public final class Learner {
                         return true;
                     }
                 }));
-            int right = 0;
-            for (Future<Boolean> f : results) if (f.get()) right++;
-            return (float) right / questions.size();
+            for (int i = 0; i < out.length; i++) out[i] = results.get(i).get();
+            return out;
         } finally {
             pool.shutdown();
         }
     }
 
-    /** Mean over stages of each stage's score, like the Python report card average. */
-    float curriculumScore(Trainer tr, Map<String, float[]> W) throws Exception {
+    /** Each exam section's score (letters, numbers, ..., copying). */
+    Map<String, Float> skillScores(Trainer tr, Map<String, float[]> W) throws Exception {
+        Map<String, Float> out = new java.util.LinkedHashMap<>();
         List<String> stages = new ArrayList<>();
         for (String[] q : exam) if (!stages.contains(q[0])) stages.add(q[0]);
-        float sum = 0;
         for (String st : stages) {
             List<String[]> qs = new ArrayList<>();
             for (String[] q : exam) if (q[0].equals(st)) qs.add(q);
-            sum += grade(tr, W, qs);
+            out.put(st, grade(tr, W, qs));
         }
-        return stages.isEmpty() ? 1f : sum / stages.size();
+        return out;
+    }
+
+    /** Mean over sections, like the Python report card average. */
+    static float average(Map<String, Float> skills) {
+        float sum = 0;
+        for (float v : skills.values()) sum += v;
+        return skills.isEmpty() ? 1f : sum / skills.size();
     }
 
     // ------------------------------------------------------------------ a session
@@ -234,33 +315,63 @@ public final class Learner {
     public Result session(final Trainer tr, World world, Progress progress, int maxSteps, long budgetMillis) throws Exception {
         long started = System.currentTimeMillis();
         Result res = new Result();
-        res.newSources = gather(world, progress);
+        gather(world, progress, res);
 
-        final List<String[]> facts = new ArrayList<>();
+        final List<String[]> facts = new ArrayList<>(), studying = new ArrayList<>(), review = new ArrayList<>();
         for (String line : world.readList("taught")) { String[] f = fact(line); if (f != null) facts.add(f); }
-        List<String> reading = world.library();
-        int readingChars = 0;
-        for (String r : reading) readingChars += r.length();
-        float amount = Math.min(1f, Math.min(1f, readingChars / 20000f) + (facts.isEmpty() ? 0f : Math.min(1f, 0.2f + facts.size() / 5f)));
-        int nNew = (facts.isEmpty() && reading.isEmpty()) ? 0 : Math.min(maxNewRows, Math.max(1, Math.round(maxNewRows * amount)));
-        if (nNew == 0 && facts.isEmpty()) {
-            res.summary = "nothing new to learn yet. teach me something, share an article with me, or allow the internet.";
+        // don't cram: a few new facts from reading per session (oldest first), plus a little review
+        // of facts already mastered (spaced repetition). Raw text only goes to memory, for recall.
+        List<String> mastered = world.readList("mastered");
+        for (String line : world.readList("absorbed")) {
+            String[] f = fact(line);
+            if (f == null) continue;
+            if (!mastered.contains(f[0])) { if (studying.size() < studyPerSession) studying.add(f); }
+            else review.add(f);
+        }
+        java.util.Collections.shuffle(review, rng);
+        while (review.size() > 8) review.remove(review.size() - 1);
+        final List<String[]> read = new ArrayList<>(studying);
+        read.addAll(review);
+        float wTaught = facts.isEmpty() ? 0 : Math.min(1f, 0.2f + facts.size() / 5f);
+        float wRead = read.isEmpty() ? 0 : Math.min(1f, 0.2f + read.size() / 10f);
+        float amount = Math.min(1f, wTaught + wRead);
+        int nNew = amount == 0 ? 0 : Math.min(maxNewRows, Math.max(1, Math.round(maxNewRows * amount)));
+        if (facts.isEmpty() && read.isEmpty()) {
+            res.summary = "nothing new to learn yet. teach me something, share an article with me, "
+                          + "or tap the globe and ask me to learn about something.";
             return res;
         }
 
-        List<String[]> taughtExam = new ArrayList<>();
+        List<String[]> taughtExam = new ArrayList<>(), readExam = new ArrayList<>();
         for (String[] f : facts) taughtExam.add(new String[]{"taught", "user: " + f[0] + "?\nmorpheus: ", f[1] + "\n"});
+        for (String[] f : read) readExam.add(new String[]{"read", "user: " + f[0] + "?\nmorpheus: ", f[1] + "\n"});
         final Map<String, float[]> pastSelf = tr.effective();  // learning without forgetting
         progress.update("sitting my exam before studying…");
-        res.before = curriculumScore(tr, pastSelf);
+        Map<String, Float> skillsBefore = skillScores(tr, pastSelf);
+        res.before = average(skillsBefore);
+        Map<String, Float> skillsFirst = new java.util.HashMap<>();  // each skill's very first score
+        for (String line : world.readList("original_skills")) {
+            String[] p = line.split("\t");
+            skillsFirst.put(p[0], Float.parseFloat(p[1]));
+        }
+        if (skillsFirst.isEmpty()) {
+            List<String> save = new ArrayList<>();
+            for (Map.Entry<String, Float> e : skillsBefore.entrySet()) save.add(e.getKey() + "\t" + e.getValue());
+            world.writeList("original_skills", save);
+            skillsFirst.putAll(skillsBefore);
+        }
         res.taughtBefore = grade(tr, pastSelf, taughtExam);
+        res.readBefore = grade(tr, pastSelf, readExam);
         String original = first(world.readList("original_exam"));
-        float floor = Math.min(res.before, original == null ? res.before : Float.parseFloat(original)) - maxForgetting;
+        // kept only if it lost at most maxForgetting against BOTH its last brain and its very first one
+        float first = original == null ? res.before : Float.parseFloat(original);
+        float floor = Math.max(res.before, first) - maxForgetting;
+        // below its very first score? then this session heals first: fewer new rows, more anchoring
+        boolean healing = res.before < first - 0.005f;
+        float anchor = healing ? Math.max(remember, 0.8f) : remember;
+        if (healing) nNew = Math.min(nNew, 1);
         if (original == null) world.writeList("original_exam", Arrays.asList(String.valueOf(res.before)));
 
-        // weight reading and taught facts by how much there is of each
-        float wRead = reading.isEmpty() ? 0 : Math.min(1f, readingChars / 20000f);
-        float wTaught = facts.isEmpty() ? 0 : Math.min(1f, 0.2f + facts.size() / 5f);
         final int block = tr.base.block;
         long stepMillis = 0;
         int steps = maxSteps;
@@ -274,12 +385,11 @@ public final class Learner {
                 int[] rowIds;
                 if (r < batch - nNew) {
                     rowIds = row(block, lessons);
-                    alpha[r] = remember;
+                    alpha[r] = anchor;
                 } else {
                     List<String> pool = new ArrayList<>();
                     for (int k = 0; k < 16; k++)
-                        pool.add(rng.nextFloat() * (wRead + wTaught) < wTaught ? taughtLesson(facts)
-                                 : readingLesson(reading.get(rng.nextInt(reading.size()))));
+                        pool.add(rng.nextFloat() * (wTaught + wRead) < wTaught ? taughtLesson(facts) : taughtLesson(read));
                     rowIds = row(block, pool);
                 }
                 x[r] = Arrays.copyOf(rowIds, block);
@@ -318,15 +428,45 @@ public final class Learner {
         res.steps = steps;
         progress.update("sitting my exam after studying…");
         Map<String, float[]> now = tr.effective();
-        res.after = curriculumScore(tr, now);
+        Map<String, Float> skillsAfter = skillScores(tr, now);
+        res.after = average(skillsAfter);
         res.taughtAfter = grade(tr, now, taughtExam);
+        boolean[] readOk = gradeEach(tr, now, readExam);
+        int readRight = 0;
+        for (boolean ok : readOk) if (ok) readRight++;
+        res.readAfter = readExam.isEmpty() ? -1 : (float) readRight / readExam.size();
         res.kept = res.after >= floor;
+        String worse = null;  // and no single skill may fall far below its best (last or first)
+        for (Map.Entry<String, Float> e : skillsAfter.entrySet()) {
+            float best = Math.max(skillsBefore.containsKey(e.getKey()) ? skillsBefore.get(e.getKey()) : 0f,
+                                  skillsFirst.containsKey(e.getKey()) ? skillsFirst.get(e.getKey()) : 0f);
+            if (e.getValue() < best - maxSkillDrop) { res.kept = false; worse = e.getKey(); }
+        }
+        if (res.kept) {  // facts it now answers are mastered; the rest stay on the study list
+            for (int i = 0; i < studying.size(); i++) if (readOk[i] && !mastered.contains(studying.get(i)[0])) mastered.add(studying.get(i)[0]);
+            world.writeList("mastered", mastered);
+        }
         long seconds = (System.currentTimeMillis() - started) / 1000;
-        res.summary = (res.kept ? "i learned " : "i tried to learn, but it made me forget, so i kept my old brain. ")
-            + (res.kept ? (facts.isEmpty() ? "from my reading" : facts.size() + " thing" + (facts.size() == 1 ? "" : "s") + " you taught me"
-                           + (res.taughtAfter >= 0 ? String.format(java.util.Locale.US, " (%.0f%% right now)", res.taughtAfter * 100) : ""))
-                        + (res.newSources > 0 ? " and " + res.newSources + " new thing" + (res.newSources == 1 ? "" : "s") + " i read" : "")
-                        + ". " : "")
+        StringBuilder what = new StringBuilder();
+        if (!res.titles.isEmpty())
+            what.append("i read about ").append(Assistant.join(", ", res.titles.subList(0, Math.min(4, res.titles.size()))))
+                .append(res.titles.size() > 4 ? " and more" : "").append(" and found ").append(res.newFacts)
+                .append(" new facts. ");
+        if (res.kept) {
+            what.append("i studied");
+            if (!facts.isEmpty())
+                what.append(String.format(java.util.Locale.US, " %d thing%s you taught me (%.0f%% right)", facts.size(),
+                                          facts.size() == 1 ? "" : "s", res.taughtAfter * 100));
+            if (!read.isEmpty())
+                what.append(facts.isEmpty() ? "" : " and").append(String.format(java.util.Locale.US,
+                    " %d facts from my reading (%d right now, %d mastered in all)", read.size(), readRight, mastered.size()));
+            what.append(". ");
+        } else {
+            what.append("i tried to learn, but it made me forget")
+                .append(worse != null ? " some " + ("copying".equals(worse) ? "spelling of new words" : worse) : "")
+                .append(", so i kept my old brain. ");
+        }
+        res.summary = what.toString()
             + String.format(java.util.Locale.US, "my exam: %.1f%% before, %.1f%% after. %d steps in %d s.",
                             res.before * 100, res.after * 100, steps, seconds);
         List<String> sessions = world.readList("sessions");

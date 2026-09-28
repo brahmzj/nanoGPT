@@ -135,6 +135,30 @@ public final class Phone implements Assistant.Platform, Learner.World {
         }
     }
 
+    /** A whole Simple English Wikipedia article: {title, plain text, linked titles one per line}. */
+    public String[] article(String topic) {
+        if (!internetAllowed()) return null;
+        try {
+            JSONArray hits = new JSONArray(get(WIKI + "/w/api.php?action=opensearch&format=json&limit=1&search="
+                                               + URLEncoder.encode(topic, "UTF-8")));
+            if (hits.getJSONArray(1).length() == 0) return null;
+            String title = hits.getJSONArray(1).getString(0);
+            JSONObject pages = new JSONObject(get(WIKI + "/w/api.php?action=query&format=json&prop=extracts%7Clinks"
+                + "&explaintext=1&redirects=1&plnamespace=0&pllimit=40&titles=" + URLEncoder.encode(title, "UTF-8")))
+                .getJSONObject("query").getJSONObject("pages");
+            JSONObject page = pages.getJSONObject(pages.keys().next());
+            String text = page.optString("extract", "").replaceAll("(?m)^=+[^=]*=+\\s*$", " ");  // drop section headings
+            if (text.trim().isEmpty()) return null;
+            if (text.length() > 30_000) text = text.substring(0, 30_000);
+            StringBuilder links = new StringBuilder();
+            JSONArray ls = page.optJSONArray("links");
+            for (int i = 0; ls != null && i < ls.length(); i++) links.append(ls.getJSONObject(i).optString("title")).append('\n');
+            return new String[]{page.optString("title", title), text, links.toString()};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     String[] summary(String url) throws Exception {
         JSONObject page = new JSONObject(get(url));
         String extract = page.optString("extract", "");
@@ -178,11 +202,18 @@ public final class Phone implements Assistant.Platform, Learner.World {
         return d;
     }
 
+    static List<String> libraryCache;
+    static String libraryStamp;
+
     public List<String> library() {
         List<String> out = new ArrayList<>();
         File[] files = libraryDir().listFiles();
         if (files == null) return out;
         Arrays.sort(files);
+        String stamp = files.length + ":" + (files.length > 0 ? files[files.length - 1].getName() : "");
+        synchronized (Phone.class) {
+            if (stamp.equals(libraryStamp)) return new ArrayList<>(libraryCache);
+        }
         int chars = 0;
         for (int i = files.length - 1; i >= 0 && chars < 1_000_000; i--) {  // newest first
             try (Reader r = new InputStreamReader(new GZIPInputStream(new FileInputStream(files[i])), "UTF-8")) {
@@ -193,6 +224,10 @@ public final class Phone implements Assistant.Platform, Learner.World {
                 chars += sb.length();
             } catch (Exception ignored) {
             }
+        }
+        synchronized (Phone.class) {
+            libraryCache = new ArrayList<>(out);
+            libraryStamp = stamp;
         }
         return out;
     }

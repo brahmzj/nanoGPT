@@ -17,9 +17,12 @@ files, from what you teach it, and from the internet only when you allow it. It 
 while charging, and it rolls back any session that makes it forget.
 
 **On Android:** tap to install **[Morpheus.apk](https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk)**
-(312 KB, brain included). The app has chat, voice and the assistant skills, and it **teaches
+(about 330 KB, brain included). The app has chat, voice and the assistant skills, and it **teaches
 itself while the phone charges**: from what you teach it, its own mistakes, its own curiosity
-(unanswered questions, looked up once you allow the internet) and what you share with it. Its
+(unanswered questions, looked up once you allow the internet), what you share with it, and what it
+**browses** ("learn about volcanoes": it reads Simple English Wikipedia, follows links, turns
+sentences into questions to study a few at a time, and keeps every sentence in a searchable memory
+so it can answer word for word from its reading). Its
 153 KB brain stays frozen, and new knowledge goes into small adapters (LoRA). Everything runs on
 the phone. See [android/README.md](android/README.md).
 

@@ -33,6 +33,21 @@ public class Harness {
             System.out.flush();
             return;
         }
+        if (args[0].equals("facts")) {  // facts <title> <article.txt>: one "question \t answer" per line
+            String text = new String(Files.readAllBytes(Paths.get(args[2])), StandardCharsets.UTF_8);
+            for (String[] f : ai.morpheus.Reader.facts(args[1], text)) out.append(f[0]).append('\t').append(f[1]).append('\n');
+            System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            return;
+        }
+        if (args[0].equals("recall")) {  // recall <article.txt> <question...>: the best sentence per question
+            String text = new String(Files.readAllBytes(Paths.get(args[1])), StandardCharsets.UTF_8);
+            ai.morpheus.Reader.Memory mem = new ai.morpheus.Reader.Memory(java.util.Arrays.asList(text.split("\n=====\n")));
+            for (int i = 2; i < args.length; i++) out.append(String.valueOf(mem.recall(args[i]))).append('\n');
+            System.out.write(out.toString().getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            return;
+        }
         Brain brain;
         try (FileInputStream in = new FileInputStream(args[1])) {
             brain = new Brain(in);
@@ -63,6 +78,7 @@ public class Harness {
                     public int[] battery() { return null; }
                     public boolean internetAllowed() { return false; }
                     public String[] lookup(String topic) { return null; }
+                    public List<String> library() { return new ArrayList<>(); }
                 });
                 for (String line : lines(args[2])) out.append(escape(a.respond(line))).append('\n');
                 break;
@@ -119,31 +135,76 @@ public class Harness {
                         return new ArrayList<>(store.containsKey(name) ? store.get(name) : new ArrayList<String>());
                     }
                     public void writeList(String name, List<String> items) { store.put(name, new ArrayList<>(items)); }
-                    public boolean internetAllowed() { return false; }
+                    public boolean internetAllowed() { return System.getProperty("articles") != null; }
                     public String[] lookup(String topic) { return null; }
                     public String randomArticle() { return null; }
+                    public String[] article(String topic) {
+                        String dir = System.getProperty("articles");
+                        if (dir == null) return null;
+                        try {
+                            java.io.File f = new java.io.File(dir, topic.toLowerCase().replace(' ', '_') + ".txt");
+                            if (!f.exists()) return null;
+                            List<String> ls = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+                            return new String[]{ls.get(0), ls.get(1), ls.size() > 2 ? ls.get(2).replace('|', '\n') : ""};
+                        } catch (Exception e) {
+                            return null;
+                        }
+                    }
                     public String fetchText(String url) { return null; }
                     public List<String> library() { return new ArrayList<>(lib); }
                     public void addToLibrary(String text) { lib.add(0, text); }
                     public long now() { return 0; }
                 };
-                store.put("taught", new ArrayList<>(java.util.Arrays.asList(
-                    "what is the capital of france\tparis is the capital of france.")));
-                lib.add("the moon goes around the earth. the earth goes around the sun.");
+                if (System.getProperty("interests") != null) {  // browsing: interests to read about, no taught facts
+                    List<String> q = new ArrayList<>();
+                    for (String t : System.getProperty("interests").split(",")) q.add(t + "\t0");
+                    store.put("reading_queue", q);
+                } else {
+                    store.put("taught", new ArrayList<>(java.util.Arrays.asList(
+                        "what is the capital of france\tparis is the capital of france.")));
+                    lib.add("the moon goes around the earth. the earth goes around the sun.");
+                }
                 ai.morpheus.Learner learner = new ai.morpheus.Learner(new FileInputStream(args[2]), new FileInputStream(args[3]));
                 if (System.getProperty("remember") != null) learner.remember = Float.parseFloat(System.getProperty("remember"));
                 if (System.getProperty("lr") != null) learner.lr = Float.parseFloat(System.getProperty("lr"));
                 ai.morpheus.Trainer tr = new ai.morpheus.Trainer(brain);
                 if (System.getProperty("rank") != null) tr.useAdapters(Integer.parseInt(System.getProperty("rank")), 1);
-                ai.morpheus.Learner.Result r = learner.session(tr, world, new ai.morpheus.Learner.Progress() {
+                ai.morpheus.Learner.Progress quiet = new ai.morpheus.Learner.Progress() {
                     public void update(String message) { System.err.println(message); }
                     public boolean cancelled() { return false; }
-                }, Integer.parseInt(args[4]), 3_600_000L);
+                };
+                int sessions = Integer.parseInt(System.getProperty("sessions", "1"));
+                ai.morpheus.Learner.Result r = null;
+                for (int k = 0; k < sessions; k++) {  // nights in a row: keep, or roll back to the last kept brain
+                    java.io.ByteArrayOutputStream kept = new java.io.ByteArrayOutputStream();
+                    tr.save(kept);
+                    r = learner.session(tr, world, quiet, Integer.parseInt(args[4]), 3_600_000L);
+                    if (sessions > 1) System.out.println("session " + (k + 1) + ": " + (r.kept ? "kept. " : "rolled back. ") + r.summary);
+                    if (!r.kept) tr = ai.morpheus.Trainer.load(brain, new java.io.ByteArrayInputStream(kept.toByteArray()));
+                }
                 out.append(r.kept).append('\n').append(r.before).append('\n').append(r.after).append('\n')
                    .append(r.taughtBefore).append('\n').append(r.taughtAfter).append('\n').append(r.summary).append('\n');
                 Brain learned = tr.toBrain();
                 for (int i = 5; i < args.length; i++)
                     out.append(learned.generate("\nuser: " + args[i] + "\nmorpheus: ", 128)).append('\n');
+                out.append("absorbed: ").append(store.containsKey("absorbed") ? store.get("absorbed").size() : 0)
+                   .append(", queue: ").append(store.get("reading_queue")).append('\n');
+                final Brain answering = learned;  // and through the assistant, with its memory of the reading
+                Assistant asst = new Assistant(answering, new Assistant.Platform() {
+                    public long now() { return 0; }
+                    public List<String> readList(String name) {
+                        return new ArrayList<>(store.containsKey(name) ? store.get(name) : new ArrayList<String>());
+                    }
+                    public void writeList(String name, List<String> items) { store.put(name, new ArrayList<>(items)); }
+                    public boolean setAlarm(int hour, int minute, String message) { return false; }
+                    public boolean setTimer(int seconds, String message) { return false; }
+                    public boolean openUrl(String url) { return false; }
+                    public int[] battery() { return null; }
+                    public boolean internetAllowed() { return false; }
+                    public String[] lookup(String topic) { return null; }
+                    public List<String> library() { return new ArrayList<>(lib); }
+                });
+                for (int i = 5; i < args.length; i++) out.append("assistant: ").append(asst.respond(args[i])).append('\n');
                 break;
             }
             default:

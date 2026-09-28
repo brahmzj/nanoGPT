@@ -39,6 +39,20 @@ public final class Assistant {
         int[] battery();                                   // {percent, charging ? 1 : 0}, or null
         boolean internetAllowed();
         String[] lookup(String topic);                     // {title, extract}, or null
+        List<String> library();                            // everything it has read, newest first
+    }
+
+    Reader.Memory memory;
+    int memoryTexts = -1;
+
+    /** A searchable memory of everything read, rebuilt when the reading grows. */
+    Reader.Memory memory() {
+        List<String> lib = platform.library();
+        if (memory == null || lib.size() != memoryTexts) {
+            memory = new Reader.Memory(lib);
+            memoryTexts = lib.size();
+        }
+        return memory;
     }
 
     static final Set<String> STOPWORDS = new HashSet<>(Arrays.asList((
@@ -74,6 +88,9 @@ public final class Assistant {
         add("^set (a |an )?timer for (.+)$", "timer");
         add("^(set |make )?(an |a )?alarm (for|at) (.+)$", "alarm");
         add("^remind me (.+)$", "remind");
+        add("^(learn|read|study|find out|research) (about|up on) (.+?)[.!?]*$", "interest");
+        add("^(what are you (reading|learning|studying)( about)?|what are your interests)\\??$", "interests");
+        add("^what do you know about (.+?)\\??$", "know");
         add("^(search( the web)? for|google|search) (.+)$", "search");
         add("^(look up|lookup|tell me about|search wikipedia for|who is|who was) (.+?)\\??$", "lookup");
     }
@@ -99,6 +116,9 @@ public final class Assistant {
             case "timer": return timer(m.group(2));
             case "alarm": return alarm(m.group(4));
             case "remind": return remind(m.group(1));
+            case "interest": return interest(m.group(3));
+            case "interests": return interests();
+            case "know": return know(m.group(1));
             case "search": return search(m.group(3));
             case "lookup": return lookup(text, m.group(2));
             default: throw new IllegalArgumentException(skill);
@@ -130,6 +150,12 @@ public final class Assistant {
         }
         if (reply == null) {
             reply = chat.ask(text);
+            if (reply.trim().isEmpty()) reply = UNKNOWN_ANSWER;  // saying nothing is not knowing
+            String grounded = reply.equals(UNKNOWN_ANSWER) ? null : ground(text, reply);
+            if (grounded != null) {  // what it read disagrees with a half-learned answer: trust the reading
+                reply = grounded;
+                chat.record(text, reply);
+            }
             if (reply.equals(UNKNOWN_ANSWER)) {
                 String better = fallback(text);
                 if (better != null) reply = better;
@@ -143,6 +169,8 @@ public final class Assistant {
     String fallback(String text) {
         String note = recall(text);
         if (note != null) { chat.record(text, note); return note; }
+        String read = memory().recall(text);  // something it read
+        if (read != null) { chat.record(text, read); return read; }
         Matcher m = Pattern.compile("^(what|who) (is|are|was|were) (a |an |the )?(.+?)\\??$").matcher(text);
         if (m.matches() && platform.internetAllowed()) return lookup(text, m.group(4));
         return null;
@@ -174,6 +202,61 @@ public final class Assistant {
     }
 
     // ------------------------------------------------------------------ learning
+
+    /**
+     * Grounding: if its reading covers the question but does not support the brain's answer (a fact
+     * only half learned comes out garbled), answer with the sentence it read instead. The brain's
+     * attempt still helps pick which sentence: the one sharing the most words with it.
+     */
+    String ground(String question, String reply) {
+        List<String> hits = memory().search(question, 5);
+        if (hits.isEmpty()) return null;
+        Set<String> said = keywords(reply);
+        said.removeAll(keywords(question));
+        if (said.isEmpty()) return null;
+        Set<String> support = new HashSet<>();
+        for (String h : hits) support.addAll(keywords(h));
+        int backed = 0;
+        for (String w : said) if (support.contains(w)) backed++;
+        if (backed * 2 >= said.size()) return null;  // the brain agrees with what it read
+        if (question.matches("^(what|who) (is|are|was|were) .*")) return hits.get(0);  // a definition wins
+        String best = hits.get(0);
+        int bestShared = -1;
+        for (String h : hits) {
+            Set<String> k = keywords(h);
+            k.retainAll(said);
+            if (k.size() > bestShared) { bestShared = k.size(); best = h; }
+        }
+        return best;
+    }
+
+    /** "learn about volcanoes": read about it (and a few pages it links to) at the next session. */
+    String interest(String topic) {
+        topic = topic.trim().replaceFirst("^(a|an|the) ", "");
+        List<String> queue = platform.readList("reading_queue");
+        for (java.util.Iterator<String> it = queue.iterator(); it.hasNext(); )
+            if (it.next().startsWith(topic + "\t")) it.remove();
+        queue.add(0, topic + "\t0");
+        platform.writeList("reading_queue", queue);
+        return platform.internetAllowed()
+            ? "ok! i will read about " + topic + " the next time i study (while you charge me, or tap the brain now)."
+            : "ok! tap the globe so i can read on the internet, and i will read about " + topic + " the next time i study.";
+    }
+
+    String interests() {
+        List<String> want = new ArrayList<>(), done = platform.readList("read_titles");
+        for (String q : platform.readList("reading_queue")) { if (want.size() < 5) want.add(q.split("\t")[0]); }
+        if (want.isEmpty() && done.isEmpty()) return "nothing yet. say: learn about volcanoes.";
+        String out = want.isEmpty() ? "" : "i want to read about " + join(", ", want) + ". ";
+        if (!done.isEmpty()) out += "lately i read about " + join(", ", done.subList(Math.max(0, done.size() - 5), done.size())) + ".";
+        return out.trim();
+    }
+
+    String know(String topic) {
+        List<String> found = memory().search("what is " + topic, 2);
+        if (found.isEmpty()) return "i have not read about " + topic + " yet. say: learn about " + topic + ".";
+        return join(" ", found);
+    }
 
     void wonder(String question) {
         String q = key(question);
@@ -441,6 +524,8 @@ public final class Assistant {
 
     String lookup(String text, String topic) {
         topic = topic.trim().replaceAll("\\?+$", "").replaceFirst("^(a|an|the) ", "");
+        String read = memory().recall(text);  // what it already read comes first
+        if (read != null) return read;
         if (!platform.internetAllowed())
             return "i have not learned about " + topic + " yet. if you allow the internet (tap the globe), i can look it up.";
         String[] found = platform.lookup(topic);

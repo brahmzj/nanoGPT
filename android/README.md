@@ -9,7 +9,7 @@ keeps learning from files you give it, from things you teach it, and from the in
 
 1. On your phone, open this link:
    **<https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk>**
-   It's a 312 KB download that includes the 153 KB brain and its curriculum for studying.
+   It's a small download (about 330 KB) that includes the 153 KB brain and its curriculum for studying.
    If the link won't download, see the note below.
 2. Tap the downloaded file. The first time, Android asks you to allow installs from your
    browser: allow it and go back. Play Protect may say the app is from an unknown developer;
@@ -46,7 +46,9 @@ Android's job scheduler), or right now when you tap 🧠. What it learns from:
 3. **Its own curiosity**: every question it could not answer is remembered. With 🌐 on, a session
    looks those up on Simple English Wikipedia and studies the answers. Ask it "what are you
    curious about?"
-4. **What you share with it**, plus a few random Simple Wikipedia articles when 🌐 is on.
+4. **What it reads**: your interests ("learn about volcanoes") and where they lead. See
+   *Browsing* below.
+5. **What you share with it**: Share → Morpheus from any app.
 
 How a session keeps it safe:
 
@@ -70,6 +72,44 @@ few minutes on a phone):
 | how do you spell zebra? / brahm? | spelled right                    | spelled right                   |
 | what color are apples?           | apples are red.                  | apples are red.                 |
 | curriculum exam                  | 97.1%                            | 97.1%                           |
+
+### Browsing: how Morpheus reads and teaches itself
+
+Tap 🌐 to let it use the internet, then tell it what to read:
+
+```
+you> learn about volcanoes
+morpheus> ok! i will read about volcanoes the next time i study (while you charge me, or tap the brain now).
+```
+
+Each session (charging, or 🧠) it reads about 6 Simple English Wikipedia pages: first the
+questions it could not answer (its own curiosity), then your interests, then a few pages they
+link to (Volcano → Lava → Mount Vesuvius…). Links you share go in too. Then it **absorbs** what it read:
+
+- **Every sentence goes into a searchable memory.** Ask "what do you know about lava?", "tell
+  me about the eiffel tower", or anything its brain does not know, and it answers with the
+  sentence it read, word for word. Nothing is made up.
+- **Simple sentences become questions and answers it studies.** For example "paris is the capital
+  and largest city of france." gives "what is the capital of france?" and "what is the largest city
+  of france?". It studies **about 4 new ones per session** plus a little review of ones it already
+  mastered (spaced repetition). In testing, cramming a whole page into one session made it forget
+  its ABCs, and the guard rolled that back.
+- **If its brain half-learned a fact and says something its reading contradicts, the reading wins**
+  (grounding). "what is a volcano?" is answered with the sentence that *defines* a volcano.
+
+"what are you reading about?" shows its reading list and what it read lately.
+
+**Tested on the real brain**, over three sessions in a row with sample Wikipedia-style pages about
+Paris and volcanoes. All three sessions were kept, it mastered 6 facts, and the exam moved 95.7% →
+93.9%, within its 2-point budget. Afterwards every answer was right: "paris is the capital and
+largest city of france.", "the eiffel tower is 330 metres tall.", "lava is hot melted rock.",
+"a volcano is a mountain where lava comes out of the ground.". It still says "i have not learned
+that yet" about Spain, and it still spells zebra, brahm and river.
+
+**The guard is strict:** a session is kept only if the exam stays within 2 points of *both* its last
+and its first score, and no single skill (letters, numbers, math, words, world, talk, spelling new
+words) drops more than 3 questions. When it is below its first score, the next session heals first:
+fewer new facts, more review.
 
 Ask "what did you learn?" to hear about its last session. **Long-press 🧠** to send it back to the
 brain it shipped with (your notes, list and taught answers are kept).

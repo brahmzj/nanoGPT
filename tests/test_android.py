@@ -253,7 +253,62 @@ class TestJavaBrain(unittest.TestCase):
             self.assertTrue(0.0 <= float(v) <= 1.0)
         self.assertIn("my exam:", summary)
         self.assertIn("6 steps", summary)
-        self.assertEqual(len(out), 7)  # and the learned brain still answers
+        self.assertTrue(out[7].startswith("absorbed:") and out[8].startswith("assistant:"), out)
+
+    ARTICLES = {
+        "paris": ("Paris", "Paris is the capital and largest city of France. It is on the Seine River. "
+                  "The Eiffel Tower is a famous iron tower in Paris. It is 330 metres tall. The Eiffel Tower "
+                  "was built in 1889.", "Eiffel Tower|France"),
+        "eiffel_tower": ("Eiffel Tower", "The Eiffel Tower was designed by Gustave Eiffel.", "Paris"),
+        "france": ("France", "France is a country in Western Europe. France has 13 regions.", "Paris|Europe"),
+    }
+
+    def article_dir(self):
+        d = os.path.join(self.tmp, "articles")
+        os.makedirs(d, exist_ok=True)
+        for name, (title, text, links) in self.ARTICLES.items():
+            with open(os.path.join(d, name + ".txt"), "w") as f:
+                f.write(f"{title}\n{text}\n{links}\n")
+        return d
+
+    def test_reading_becomes_questions(self):
+        path = os.path.join(self.tmp, "paris.txt")
+        with open(path, "w") as f:
+            f.write(self.ARTICLES["paris"][1] + " Albert Einstein was a German-born physicist. "
+                    "The theory of relativity was written by Albert Einstein. A spider has 8 legs.")
+        facts = dict(line.split("\t") for line in self.java("facts", "Paris", path))
+        self.assertEqual(facts["what is the capital of france"], "paris is the capital and largest city of france.")
+        self.assertEqual(facts["what is the largest city of france"], "paris is the capital and largest city of france.")
+        self.assertEqual(facts["when was the eiffel tower built"], "the eiffel tower was built in 1889.")
+        self.assertEqual(facts["who was albert einstein"], "albert einstein was a german-born physicist.")
+        self.assertEqual(facts["who wrote the theory of relativity"], "the theory of relativity was written by albert einstein.")
+        self.assertEqual(facts["how many legs does a spider have"], "a spider has 8 legs.")
+        # "it" is the tower (the previous sentence's subject), never "paris is 330 metres tall"
+        self.assertNotIn("paris is 330 metres tall.", facts.values())
+        self.assertNotIn("what was the eiffel tower", facts)  # passives are not definitions
+
+    def test_recall_from_reading(self):
+        path = os.path.join(self.tmp, "memory.txt")
+        with open(path, "w") as f:
+            f.write("Paris\n" + self.ARTICLES["paris"][1] + "\n=====\nEiffel Tower\n" + self.ARTICLES["eiffel_tower"][1])
+        got = self.java("recall", path, "how tall is the eiffel tower?", "who designed the eiffel tower?",
+                        "what is the capital of spain?")
+        self.assertEqual(got, ["the eiffel tower is 330 metres tall.", "the eiffel tower was designed by gustave eiffel.",
+                               "null"])
+
+    def test_browsing_session_reads_and_absorbs(self):
+        from export_lessons import export as export_lessons
+        export_lessons(self.tmp, per_stage=50, exam_per_stage=5)
+        morph = self.tiny_bin("ternary")
+        out = subprocess.run(["java", f"-Darticles={self.article_dir()}", "-Dinterests=paris", "-Drank=4", "-cp", self.tmp,
+                              "Harness", "session", morph + ".bin", os.path.join(self.tmp, "lessons.txt"),
+                              os.path.join(self.tmp, "exam.txt"), "4", "how tall is the eiffel tower?"],
+                             check=True, capture_output=True, env=self.env).stdout.decode().split("\n")
+        summary = out[5]
+        self.assertIn("i read about paris, eiffel tower, france", summary.lower())
+        absorbed = next(line for line in out if line.startswith("absorbed:"))
+        self.assertNotIn("absorbed: 0", absorbed)
+        self.assertIn("assistant: the eiffel tower is 330 metres tall.", out)  # recalled from what it read
 
     def py_brain(self):
         class Brain:  # the NumpyBrain interface that Conversation expects

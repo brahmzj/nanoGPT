@@ -432,9 +432,10 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
                         n=s["exam_questions"], seed=exam_seed)
     curriculum_before = average([r for r in before if r[0] != "taught"])
     curriculum_after = average([r for r in after if r[0] != "taught"])
-    # the first score ever measured is the floor: small losses can not pile up session after session
+    # kept only if it lost at most max_forgetting against BOTH the last brain and the very first
+    # one, so small losses can not pile up session after session
     original = home.journal.setdefault("original_exam", curriculum_before)
-    floor = min(curriculum_before, original) - s["max_forgetting"]
+    floor = max(curriculum_before, original) - s["max_forgetting"]
     kept = curriculum_after >= floor
     summary = {
         "when": time.strftime("%Y-%m-%d %H:%M"), "steps": steps, "new_sources": new,

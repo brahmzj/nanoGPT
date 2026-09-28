@@ -183,7 +183,8 @@ public class MainActivity extends Activity {
 
         bubble("hello! i am morpheus. i learned from abc and 123. ask me about letters, numbers, "
                + "words or math, or say help. 🎤 lets you talk to me. i keep learning while your phone "
-               + "charges, and 🧠 makes me study right now.", false);
+               + "charges, and 🧠 makes me study right now. to let me read and teach myself, tap 🌐 "
+               + "and say: learn about volcanoes.", false);
         tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
             public void onInit(int status) { }
         });
