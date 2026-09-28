@@ -1,7 +1,7 @@
 # Morpheus on Android
 
 Morpheus runs **on the phone itself**: no cloud, no account, no PyTorch. It needs about
-60 MB for Python and numpy plus a 680 KB brain. It chats, helps as a personal assistant, and
+60 MB for Python and numpy plus a **153 KB** brain (1.58 bits per weight). It chats, helps as a personal assistant, and
 keeps learning from files you give it, from things you teach it, and from the internet
 **only if you allow it**. Learning only happens while the phone is charging.
 
