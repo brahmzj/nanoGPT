@@ -193,6 +193,14 @@ class TestCompression(unittest.TestCase):
                 np.testing.assert_array_equal(fake_quant_torch(torch.from_numpy(w), scheme).numpy(), stored,
                                               err_msg=scheme)
 
+    def test_quantization_is_idempotent(self):
+        """A phone re-quantizes a loaded brain every time it learns: that must change nothing."""
+        from morpheus.quant import SCHEMES, fake_quant_np
+        w = np.random.default_rng(6).normal(0, 0.02, size=(64, 96)).astype(np.float32)
+        for scheme in SCHEMES:
+            once = fake_quant_np(w, scheme)
+            np.testing.assert_array_equal(fake_quant_np(once, scheme), once, err_msg=scheme)
+
     def test_low_bit_levels(self):
         from morpheus.quant import quantize_np
         w = np.random.default_rng(4).normal(size=(16, 64)).astype(np.float32)

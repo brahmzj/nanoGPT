@@ -17,7 +17,9 @@ A learning session (`python -m morpheus learn`):
   1. checks power: by default it only learns while charging (energy on the grid, not the battery)
   2. reads new files from the inbox folders and, only if allowed, fetches from the internet
   3. sits a baseline exam on the whole ABC-to-talk curriculum
-  4. studies: new reading + your taught facts + review of the curriculum (so nothing is forgotten)
+  4. studies: new reading + your taught facts + review of the curriculum, while also matching
+     its own pre-session answers (learning without forgetting); the session ends in a short
+     dream as the learning rate fades to zero
   5. sits the exam again and keeps the new brain only if it lost at most `max_forgetting`
      against both the last brain and the very first one (so losses can not pile up).
      Otherwise the session is rolled back: Morpheus never drifts downhill.
@@ -43,12 +45,14 @@ import numpy as np
 
 from . import tokenizer
 from .compress import load
-from .curriculum import STAGES, Library, Stage, qa
+from .curriculum import STAGES, UNKNOWN_ANSWER, Library, Stage, pseudo_word, qa
 from .school import Classroom, report_card
 
 HOME = os.environ.get("MORPHEUS_HOME") or os.path.join(os.path.expanduser("~"), ".morpheus")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIPPED_BRAIN = os.path.join(REPO, "brains", "morpheus-nano.morph")
+STOPWORDS = set("what who where when which how is are was were the a an of to in on for do does did "
+                "you your my me i it and or".split())
 USER_AGENT = "Morpheus/0.1 (tiny personal learning model; https://github.com/brahmzj/nanoGPT)"
 TEXT_FILES = (".txt", ".md", ".html", ".htm")
 
@@ -62,7 +66,9 @@ DEFAULT_SETTINGS = {
     "session_steps": 200,
     "batch_size": 8,
     "lr": 3e-4,
-    "mix": {"curriculum": 0.5, "library": 0.3, "taught": 0.2},
+    "lr_low_bit": 1e-3,               # int3/ternary/binary brains: weights must cross rounding thresholds
+    "new_rows": 2,                    # of each batch, rows of new reading / taught facts (at most)
+    "remember": 0.5,                  # how much to also match its own pre-session answers (0..1)
     "max_forgetting": 0.02,           # max drop in exam score, vs the last AND the original brain
     "exam_questions": 60,             # per curriculum stage
     "lowercase": True,                # Morpheus grew up lowercase
@@ -134,8 +140,12 @@ class Home:
             weights, header = load(src)
             quant = {"scheme": header.get("scheme", "int8"), "embed_scheme": header.get("embed_scheme")}
             trainer = NumpyTrainer(weights, header["config"], quant=quant)
-        trainer.lr = self.settings["lr"]
+        trainer.lr = self.learning_rate(trainer)
         return trainer, src
+
+    def learning_rate(self, trainer):
+        low_bit = trainer.quant and trainer.quant["scheme"] in ("int3", "ternary", "binary")
+        return self.settings["lr_low_bit"] if low_bit else self.settings["lr"]
 
     def backup(self):
         for name in ("brain.morph", "brain-train.npz"):
@@ -344,7 +354,18 @@ def taught_stage(facts):
     def fact(rng):
         q, a = facts[rng.randrange(len(facts))]
         return qa(q, a, rng)
-    return Stage("taught", "things you taught me", [(1, 1, fact)])
+
+    def near_miss(rng):
+        """The same question about something else ('capital of france' -> 'capital of zobek'):
+        still unknown. Without these, one taught fact answers every similar question."""
+        q, _ = facts[rng.randrange(len(facts))]
+        words = q.rstrip("?").split()
+        spots = [i for i, w in enumerate(words) if len(w) > 2 and w not in STOPWORDS]
+        if not spots:
+            return fact(rng)
+        words[rng.choice(spots)] = pseudo_word(rng, 3, 7)
+        return qa(" ".join(words) + ("?" if q.endswith("?") else ""), UNKNOWN_ANSWER, rng)
+    return Stage("taught", "things you taught me", [(1, 1, fact), (0.5, 0, near_miss)])
 
 
 def average(rows):
@@ -364,33 +385,46 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
     block = trainer.cfg["block_size"]
     rng = random.Random(seed if seed is not None else time.time_ns())
 
-    # what to study: curriculum review + new reading + taught facts
-    stages, weights = list(STAGES), [s["mix"]["curriculum"] / len(STAGES)] * len(STAGES)
-    # new material gets study time in proportion to how much of it there is, so one short
-    # file (or one taught fact) is learned without crowding out everything else
+    # what to study: each batch has review rows (the whole curriculum, anchored to the brain's own
+    # pre-session answers) and new rows (reading + taught facts, learned freely). New material
+    # gets rows in proportion to how much of it there is, so one short file can not crowd out
+    # everything else.
     reading = home.library_text()
-    if reading:
-        stages.append(Library(reading))
-        weights.append(s["mix"]["library"] * min(1.0, len(reading) / 20_000))
     facts = home.taught()
     taught = taught_stage(facts) if facts else None
+    new_stages, new_weights = [], []
+    if reading:
+        new_stages.append(Library(reading))
+        new_weights.append(min(1.0, len(reading) / 20_000))
     if taught:
-        stages.append(taught)
-        weights.append(s["mix"]["taught"] * min(1.0, 0.1 + len(facts) / 10))
+        new_stages.append(taught)
+        new_weights.append(min(1.0, 0.2 + len(facts) / 5))
+    amount = min(1.0, sum(new_weights))
+    n_new = min(s["new_rows"], max(1, round(s["new_rows"] * amount))) if new_stages else 0
     exam_seed = 4242  # the same questions before and after, so the comparison is fair
     before = report_card(trainer.predict, STAGES + ([taught] if taught else []), block,
                          n=s["exam_questions"], seed=exam_seed)
     log(f"learning from {src}: {len(reading):,} chars of reading, {len(facts)} taught facts, "
         f"{new} new source(s); exam before {average(before) * 100:.1f}%")
 
-    classroom = Classroom(stages, block, s["batch_size"], seed=rng.randrange(2 ** 31), weights=weights)
+    review = Classroom(STAGES, block, s["batch_size"] - n_new, seed=rng.randrange(2 ** 31))
+    fresh = Classroom(new_stages, block, n_new, seed=rng.randrange(2 ** 31), weights=new_weights) if n_new else None
+    alpha = np.array([s["remember"]] * (s["batch_size"] - n_new) + [0.0] * n_new, dtype=np.float32)
     steps = steps or s["session_steps"]
+    past_self = {k: v.copy() for k, v in trainer.effective().items()}  # learning without forgetting
     losses = []
     for i in range(steps):
         warm = min(1.0, (i + 1) / 10)
-        lr = s["lr"] * warm * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * i / steps)))
-        rows = classroom.rows(None)
-        losses.append(trainer.step(rows[:, :-1], rows[:, 1:], lr))
+        lr = trainer.lr * warm * 0.5 * (1 + math.cos(math.pi * i / steps))  # ends in a dream: lr -> 0
+        rows = review.rows(None)
+        if fresh:
+            rows = np.concatenate((rows, fresh.rows(None)))
+        x, y = rows[:, :-1], rows[:, 1:]
+        soft = None
+        if s["remember"] > 0:
+            from .grad import softmax
+            soft = softmax(trainer.forward(x, keep=False, w=past_self)[0])
+        losses.append(trainer.step(x, y, lr, soft=soft, alpha=alpha))
         if (i + 1) % 25 == 0:
             log(f"  step {i + 1}/{steps}  loss {np.mean(losses[-25:]):.3f}")
 

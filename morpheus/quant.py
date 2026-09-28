@@ -6,11 +6,15 @@ quantization-aware training) versions that produce bit-identical weights.
   int8      -127..127          max|w| per row / 127          1 byte per weight
   int4      -7..7              max|w| per 32 weights / 7     2 weights per byte
   int3      -3..3              max|w| per 32 weights / 3     1 byte per weight, LZMA squeezes it
-  ternary   -1, 0, +1          mean|w| per row               5 weights per byte (3^5 = 243 < 256)
+  ternary   -1, 0, +1          least-squares fit per row     5 weights per byte (3^5 = 243 < 256)
   binary    -1, +1             mean|w| per row               8 weights per byte
 
 Ternary is the "1.58-bit" format of BitNet b1.58: every weight is one of three values, so a
-matrix-vector product is only additions and subtractions. Rounding a trained float brain
+matrix-vector product is only additions and subtractions. The levels are picked BitNet's way
+(round w / mean|w|), but the scale is then the least-squares fit to those levels. That is more
+accurate, and it makes quantization idempotent: re-quantizing an already quantized brain
+(which a phone does when it keeps learning from a .morph file) changes nothing. With a plain
+mean|w| scale, the zeros would shrink the scale by a third on every reload. Rounding a trained float brain
 straight to ternary destroys it; quantization-aware training (train.py: squeeze) keeps it
 learning *through* the rounding so it adapts to the grid.
 """
@@ -48,11 +52,17 @@ def quantize_np(w, scheme):
         scale = np.abs(g).max(-1, keepdims=True) / levels
     else:
         scale = np.abs(g).mean(-1, keepdims=True)
+    if kind == "absmean":  # pick the levels, then fit the scale to them (least squares)
+        s0 = np.where(scale == 0, 1.0, scale).astype(np.float16).astype(np.float32)
+        q = np.clip(np.round(g / s0), -levels, levels)
+        used = np.abs(q).sum(-1, keepdims=True)
+        fit = (np.abs(g) * np.abs(q)).sum(-1, keepdims=True) / np.maximum(used, 1)
+        scale = np.where(used > 0, fit, scale)
     scale = np.where(scale == 0, 1.0, scale).astype(np.float16)
     s32 = scale.astype(np.float32)
     if kind == "sign":
         q = np.where(g >= 0, 1, -1)
-    else:
+    elif kind == "absmax":
         q = np.clip(np.round(g / s32), -levels, levels)
     return q.astype(np.int8), scale, pad
 
@@ -131,10 +141,16 @@ def fake_quant_torch(w, scheme):
             scale = g.abs().amax(-1, keepdim=True) / levels
         else:
             scale = g.abs().mean(-1, keepdim=True)
+        if kind == "absmean":  # levels first, then the least-squares scale (see quantize_np)
+            s0 = torch.where(scale == 0, torch.ones_like(scale), scale).half().float()
+            q = torch.clamp(torch.round(g / s0), -levels, levels)
+            used = q.abs().sum(-1, keepdim=True)
+            fit = (g.abs() * q.abs()).sum(-1, keepdim=True) / used.clamp(min=1)
+            scale = torch.where(used > 0, fit, scale)
         scale = torch.where(scale == 0, torch.ones_like(scale), scale).half().float()
         if kind == "sign":
             q = torch.where(g >= 0, 1.0, -1.0)
-        else:
+        elif kind == "absmax":
             q = torch.clamp(torch.round(g / scale), -levels, levels)
         deq = (q * scale).reshape(rows.shape[0], -1)
         if pad:

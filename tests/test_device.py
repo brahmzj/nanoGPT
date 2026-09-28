@@ -127,6 +127,11 @@ class TestCompressedLearning(unittest.TestCase):
                 f.write(g.read())
             trainer, _ = home.load_trainer()
             self.assertEqual(trainer.quant["scheme"], "ternary")
+            # and thinks exactly like the file it was loaded from
+            from morpheus.runtime import NumpyMorpheus
+            ids = np.random.default_rng(1).integers(0, 96, (2, 24))
+            np.testing.assert_allclose(trainer.forward(ids, keep=False)[0],
+                                       NumpyMorpheus(weights, header).forward(ids), atol=1e-5)
 
 
 class _Server(http.server.BaseHTTPRequestHandler):

@@ -114,7 +114,9 @@ class NumpyTrainer:
 
     # ------------------------------------------------------------------ backward
 
-    def loss_and_grads(self, x, y):
+    def loss_and_grads(self, x, y, soft=None, alpha=0.0):
+        """Cross-entropy on the lessons, optionally mixed with matching `soft` target probabilities
+        (B, T, V) from a teacher, e.g. the brain's own past self (learning without forgetting)."""
         c, w = self.cfg, self.effective()  # gradients flow through the weights actually used
         logits, (ids, tape, hf, rf) = self.forward(x, w=w)
         B, T, V = logits.shape
@@ -128,6 +130,11 @@ class NumpyTrainer:
         loss = float(-np.log(flat[rows, targets] + 1e-12).mean())
         dlogits = flat.copy()
         dlogits[rows, targets] -= 1.0
+        if soft is not None and np.any(np.asarray(alpha) > 0):
+            # d/dlogits of (1 - a) * CE + a * KL(soft || p)  =  p - (1 - a) * onehot - a * soft
+            # (alpha may be one number, or one per row of the batch)
+            a = np.broadcast_to(np.asarray(alpha, dtype=np.float32).reshape(-1, 1), (B, T)).reshape(-1, 1)
+            dlogits = (1 - a) * dlogits + a * (flat - soft.reshape(-1, V))
         dlogits = (dlogits / flat.shape[0]).reshape(B, T, V)
 
         grads = {k: np.zeros_like(v) for k, v in self.w.items()}
@@ -162,10 +169,10 @@ class NumpyTrainer:
 
     # ------------------------------------------------------------------ optimizer
 
-    def step(self, x, y, lr=None):
-        """One AdamW step on a batch. x, y: int arrays (B, T). Returns the loss."""
+    def step(self, x, y, lr=None, soft=None, alpha=0.0):
+        """One AdamW step on a batch. x, y: int arrays (B, T). Returns the loss (lessons only)."""
         lr = self.lr if lr is None else lr
-        loss, grads = self.loss_and_grads(x, y)
+        loss, grads = self.loss_and_grads(x, y, soft, alpha)
         if self.grad_clip:
             norm = float(np.sqrt(sum(float((g * g).sum()) for g in grads.values())))
             if norm > self.grad_clip:
