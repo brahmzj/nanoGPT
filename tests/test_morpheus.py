@@ -223,11 +223,13 @@ class TestCompression(unittest.TestCase):
         parts, _ = quantize(w, "int4")
         self.assertEqual(len(parts[1]), w.size // 2)
 
-    def test_shipped_brain_still_loads(self):
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "brains", "morpheus-nano.morph")
-        if os.path.exists(path):
-            weights, header = load(path)
-            self.assertEqual(weights["wte.weight"].shape, (96, header["config"]["n_embd"]))
+    def test_shipped_brains_load_and_answer(self):
+        from morpheus.runtime import NumpyMorpheus
+        brains = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "brains")
+        names = [n for n in sorted(os.listdir(brains)) if n.endswith(".morph")] if os.path.isdir(brains) else []
+        for name in names:
+            brain = NumpyMorpheus.from_file(os.path.join(brains, name))
+            self.assertEqual(brain.generate("\nuser: what comes after k?\nmorpheus: "), "after k comes l.", name)
 
     def test_file_roundtrip(self):
         m = tiny()

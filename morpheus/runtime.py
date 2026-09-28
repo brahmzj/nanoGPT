@@ -93,8 +93,8 @@ class NumpyMorpheus:
         """Continue `text`; returns only the new characters (without the stop character)."""
         rng = rng or np.random.default_rng()
         bs = self.cfg["block_size"]
-        max_new_tokens = min(max_new_tokens, bs - 1)
-        ids = tokenizer.encode(tokenizer.normalize(text))[-(bs - max_new_tokens):]
+        ids = tokenizer.encode(tokenizer.normalize(text))[-(bs - 1):]  # keep as much of the prompt as fits
+        max_new_tokens = min(max_new_tokens, bs - len(ids))  # the answer stops when the context is full
         cache = self.new_cache()
         logits = self.forward(np.array([ids]), cache)[0, -1]
         out = []

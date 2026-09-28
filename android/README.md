@@ -46,6 +46,11 @@ they live in `~/.morpheus`, separate from the app.
 | "search the web for pizza near me"               | opens your browser                                    |
 | `/teach what is my dog called? = rex is your dog.` | a lesson for the next learning session              |
 
+Want it even smaller? Two extreme brains ship too: `brains/morpheus-nano-binary.morph` (100 KB,
+93.5% on the exams) and `brains/morpheus-loop.morph` (85 KB, 91.4%). To make one your Morpheus,
+including for learning, copy it into place:
+`cp ~/morpheus-app/brains/morpheus-loop.morph ~/.morpheus/brain.morph`.
+
 The home-screen widget (Termux:Widget) gets three shortcuts: **Morpheus** (chat),
 **Morpheus voice**, and **Morpheus learn now**.
 

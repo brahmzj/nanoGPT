@@ -152,12 +152,34 @@ an estimated **~9 Wh** at 25 W, about what a laptop uses in 20 minutes.
 | int3, rounded | 280 KB | 86.7 | 89.3 | 97.0 | 85.0 | 88.3 | 51.7 | 83.0% |
 | ternary, rounded | 156 KB | 15.7 | 7.7 | 7.7 | 3.0 | 0.7 | 0.0 | 5.8% |
 | **ternary, squeezed** (shipped) | **153 KB** | **100** | **97.3** | **99.7** | **99.0** | **97.3** | **93.3** | **97.8%** |
+| binary, squeezed | 100 KB | 100 | 91.7 | 98.7 | 98.7 | 85.0 | 87.0 | 93.5% |
+| half-size `loop`, ternary, int8 embedding | 85 KB | 100 | 92.7 | 98.3 | 93.3 | 80.0 | 84.0 | 91.4% |
+| half-size `loop`, ternary | 78 KB | 100 | 88.7 | 94.7 | 90.7 | 73.7 | 79.7 | 87.9% |
 
 Rounding a trained brain is free down to 4 bits and destroys it below that. **Squeezing** it
 instead (continuing to learn *through* the rounding, below) gives a 1.58-bit brain that is
 **17x smaller than float32 and as good as the original**. The ternary levels come out almost
 exactly evenly split (32.5% / 34.6% / 32.9%), so packing 5 weights per byte is within 1% of the
 entropy limit. To go smaller you need fewer parameters or fewer bits, not better coding.
+
+Going smaller has a price, paid mostly in the hardest skills (story problems and conversation):
+
+- **1 bit** (binary) keeps 93.5% at 100 KB. The zero level of ternary does real work: it lets
+  a weight switch off.
+- **Half the parameters** (the weight-shared `loop` brain, every weight used twice) loses about
+  10 points as ternary. Rounding errors compound when a weight is reused. Keeping only its
+  embedding at int8 (the matrix that also picks every output character, 12K weights) buys back
+  3.5 points for 7 KB.
+- **Dreaming matters most at the extreme.** The binary brain was at about 75% before its final
+  dream and 92.5% after it. A dream four times longer added another point.
+
+The two smallest brains that still pass most of their exams also ship, for when size matters
+more than accuracy:
+
+```sh
+python -m morpheus chat --model brains/morpheus-nano-binary.morph   # 100 KB, 93.5%
+python -m morpheus chat --model brains/morpheus-loop.morph          #  85 KB, 91.4%
+```
 
 **Speed:** the numpy runtime generates about 1,400 characters per second on **one** CPU thread.
 One numpy training step (8 x 128 characters) takes about 0.23 s on 2 threads.
@@ -327,7 +349,8 @@ morpheus/
   learn.py        lifelong learning: home folder, reading, teaching, safe sessions
   assistant.py    skills: notes, list, reminders, checked answers, look-ups
   __main__.py     the `python -m morpheus` command line
-brains/morpheus-nano.morph   the trained brain (ternary, 153 KB)
+brains/morpheus-nano.morph   the trained brain (ternary, 153 KB, 97.8%)
+brains/morpheus-nano-binary.morph, brains/morpheus-loop.morph   extreme options (100 KB, 85 KB)
 android/        Termux installer, learning job and phone guide
 tests/test_morpheus.py, tests/test_device.py
 ```

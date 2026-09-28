@@ -48,8 +48,7 @@ class TorchBrain:
         return logits.argmax(-1).cpu().numpy()
 
     def generate(self, text, max_new_tokens, temperature=0.0, top_k=None):
-        max_new_tokens = min(max_new_tokens, self.block_size - 1)
-        ids = tokenizer.encode(tokenizer.normalize(text))[-(self.block_size - max_new_tokens):]
+        ids = tokenizer.encode(tokenizer.normalize(text))[-(self.block_size - 1):]
         idx = self.torch.tensor([ids], dtype=self.torch.long, device=self.device)
         out = self.model.generate(idx, max_new_tokens, temperature, top_k, stop_id=tokenizer.NEWLINE_ID)
         new = tokenizer.decode(out[0, idx.size(1):].tolist()) if out.size(1) > idx.size(1) else ""

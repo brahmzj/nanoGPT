@@ -195,10 +195,10 @@ class Morpheus(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=0.0, top_k=None, stop_id=None):
-        """Greedy (temperature 0) or sampled generation with a KV cache.
-        The prompt is cropped from the left so prompt + answer fits in block_size."""
-        max_new_tokens = min(max_new_tokens, self.cfg.block_size - 1)
-        idx = idx[:, -(self.cfg.block_size - max_new_tokens):]
+        """Greedy (temperature 0) or sampled generation with a KV cache. As much of the prompt as
+        fits is kept; the answer stops when the context (block_size) is full."""
+        idx = idx[:, -(self.cfg.block_size - 1):]
+        max_new_tokens = min(max_new_tokens, self.cfg.block_size - idx.size(1))
         cache = KVCache(self.cfg, idx.size(0), idx.device, self.wte.weight.dtype)
         logits, _ = self(idx, cache=cache)
         out = idx
