@@ -60,6 +60,8 @@ public final class Assistant {
         add("\\b(what day is (it|today)|what'?s (the |today'?s )?date|what is (the |today'?s )?date|what is today)\\b",
             "date");
         add("\\bbattery\\b", "battery");
+        add("^what (did|have) you (learn|learned|learnt)( lately| today| recently)?\\??$", "learned");
+        add("^(what are you (curious|wondering) about|what do you wonder about)\\??$", "wonders");
         add("^remember (that )?(.+)$", "remember");
         add("^forget (that |about )?(.+)$", "forget");
         add("^what do you remember\\??$", "notes");
@@ -85,6 +87,8 @@ public final class Assistant {
             case "time": return time();
             case "date": return date();
             case "battery": return battery();
+            case "learned": return learned();
+            case "wonders": return wonders();
             case "remember": return remember(m.group(2));
             case "forget": return forget(m.group(2));
             case "notes": return listNotes();
@@ -129,6 +133,7 @@ public final class Assistant {
             if (reply.equals(UNKNOWN_ANSWER)) {
                 String better = fallback(text);
                 if (better != null) reply = better;
+                else wonder(text);  // curiosity: looked up in the next learning session, if allowed
             }
         }
         notices.add(reply);
@@ -166,6 +171,31 @@ public final class Assistant {
 
     static String key(String q) {
         return Alphabet.normalize(q).toLowerCase(Locale.ROOT).trim().replaceAll("[?.! ]+$", "");
+    }
+
+    // ------------------------------------------------------------------ learning
+
+    void wonder(String question) {
+        String q = key(question);
+        List<String> wonders = platform.readList("wonders");
+        wonders.remove(q);
+        wonders.add(q);
+        while (wonders.size() > 30) wonders.remove(0);
+        platform.writeList("wonders", wonders);
+    }
+
+    String learned() {
+        List<String> sessions = platform.readList("sessions");
+        if (sessions.isEmpty())
+            return "i have not had a learning session yet. i study while you charge me, or tap the brain to teach me now.";
+        return sessions.get(sessions.size() - 1);
+    }
+
+    String wonders() {
+        List<String> wonders = platform.readList("wonders");
+        if (wonders.isEmpty()) return "nothing right now. ask me things i do not know!";
+        List<String> last = wonders.subList(Math.max(0, wonders.size() - 5), wonders.size());
+        return "i wonder: " + join("? ", last) + "?";
     }
 
     // ------------------------------------------------------------------ skills

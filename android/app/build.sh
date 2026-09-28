@@ -28,6 +28,7 @@ mkdir -p "$OUT/assets" "$OUT/classes" "$OUT/dex"
 
 # --- 1. the brain and the icon
 python3 "$HERE/export_brain.py" "$BRAIN" "$OUT/assets/brain.bin"
+python3 "$HERE/export_lessons.py" "$OUT/assets"   # curriculum snapshot + exam, for learning on the phone
 python3 "$HERE/make_icon.py" "$OUT/res"
 
 # --- 2. resources + manifest
@@ -36,7 +37,7 @@ python3 "$HERE/make_icon.py" "$OUT/res"
     -A "$OUT/assets" -0 bin --min-sdk-version 24 --target-sdk-version 34
 
 # --- 3. code
-javac -source 8 -target 8 -bootclasspath "$JAR" -Xlint:-options -d "$OUT/classes" \
+javac -encoding UTF-8 -source 8 -target 8 -bootclasspath "$JAR" -Xlint:-options -d "$OUT/classes" \
     $(find "$HERE/src" -name '*.java')
 if [ -n "$D8" ]; then
     "$D8" --release --min-api 24 --lib "$JAR" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')

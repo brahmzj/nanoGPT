@@ -17,9 +17,11 @@ files, from what you teach it, and from the internet only when you allow it. It 
 while charging, and it rolls back any session that makes it forget.
 
 **On Android:** tap to install **[Morpheus.apk](https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk)**
-(204 KB, brain included). The app has chat, voice and the assistant skills, runs entirely on
-the phone and needs no setup. For lifelong learning, there's a one-command Termux install.
-Both are described in [android/README.md](android/README.md).
+(312 KB, brain included). The app has chat, voice and the assistant skills, and it **teaches
+itself while the phone charges**: from what you teach it, its own mistakes, its own curiosity
+(unanswered questions, looked up once you allow the internet) and what you share with it. Its
+153 KB brain stays frozen, and new knowledge goes into small adapters (LoRA). Everything runs on
+the phone. See [android/README.md](android/README.md).
 
 ```
 you> what comes after k?

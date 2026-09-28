@@ -9,11 +9,18 @@ keeps learning from files you give it, from things you teach it, and from the in
 
 1. On your phone, open this link:
    **<https://github.com/brahmzj/nanoGPT/raw/claude/clever-heisenberg-qmoont/android/Morpheus.apk>**
-   It's a 204 KB download that includes the 153 KB brain.
+   It's a 312 KB download that includes the 153 KB brain and its curriculum for studying.
+   If the link won't download, see the note below.
 2. Tap the downloaded file. The first time, Android asks you to allow installs from your
    browser: allow it and go back. Play Protect may say the app is from an unknown developer;
    tap **Install anyway**. It's your own app, built from this repository.
 3. Tap the **☾ Morpheus** icon.
+
+If the link won't download, it was probably opened inside another app's built-in browser. Copy it
+into Chrome itself, or use
+<https://raw.githubusercontent.com/brahmzj/nanoGPT/claude/clever-heisenberg-qmoont/android/Morpheus.apk>.
+Chrome's "file might be harmful" prompt is normal for any `.apk`: tap **Download anyway**.
+Installing a new version over the old one keeps your notes and everything it learned.
 
 What the app does, entirely on the phone, with no account and nothing uploaded:
 
@@ -21,13 +28,51 @@ What the app does, entirely on the phone, with no account and nothing uploaded:
 - **Assistant skills**: notes, to-do list, alarms and timers (your Clock app), time and date,
   battery, math that is checked by a calculator, web search.
 - **Teach it**: when it says "i have not learned that yet", the question is ready in the text box.
-  Type the answer after `=` and send. From then on it answers that question.
+  Type the answer after `=` and send. It answers from memory right away, and studies it into its
+  brain at the next learning session.
 - **Look things up** on Simple English Wikipedia, but only after you tap 🌐 to allow the internet.
-  The app's only permissions are internet (for that) and setting alarms.
+- **Share → Morpheus** from any app: text is read at the next session, and links too once 🌐 is on.
 
-The app remembers what you teach it, but its brain doesn't retrain on the phone yet. For
-Morpheus to keep *learning*, meaning its brain weights change while it reads your files and
-Wikipedia, use the Termux version below. It installs alongside the app and runs the same brain.
+The app's permissions: internet (only used after you tap 🌐), setting alarms, and restarting its
+learning schedule after a reboot.
+
+### Self-learning
+
+Morpheus studies **by itself, only while the phone is charging** (about every 6 hours, via
+Android's job scheduler), or right now when you tap 🧠. What it learns from:
+
+1. **What you teach it**: `/teach question = answer`, or the one-tap teach.
+2. **Its own mistakes**: when the calculator corrects its math, the correction becomes a lesson.
+3. **Its own curiosity**: every question it could not answer is remembered. With 🌐 on, a session
+   looks those up on Simple English Wikipedia and studies the answers. Ask it "what are you
+   curious about?"
+4. **What you share with it**, plus a few random Simple Wikipedia articles when 🌐 is on.
+
+How a session keeps it safe:
+
+- **Its brain stays frozen.** New knowledge goes into small low-rank adapters (LoRA, about 33K
+  numbers, a 130 KB file) on top of the 153 KB ternary brain. We tried retraining the ternary
+  weights themselves first. That learned new facts, but each flip of a -1/0/+1 weight is a big
+  jump, and it quietly broke how it spells new words ("brahm" became "brahc"). With adapters,
+  every skill we tested survived.
+- **It keeps reviewing its ABCs** from a 12,000-lesson snapshot of its curriculum, matching its
+  own pre-session answers (learning without forgetting).
+- **It sits an exam before and after**, and **rolls back** any session that costs more than 2
+  points, measured against both its last brain and its very first one.
+
+In testing, one 200-step session on the real brain took 84 seconds on a 4-core computer (expect a
+few minutes on a phone):
+
+| question                         | before                           | after                           |
+|----------------------------------|----------------------------------|---------------------------------|
+| what is the capital of france? (taught) | i have not learned that yet.     | paris is the capital of france. |
+| what is the capital of spain?    | i have not learned that yet.     | i have not learned that yet.    |
+| how do you spell zebra? / brahm? | spelled right                    | spelled right                   |
+| what color are apples?           | apples are red.                  | apples are red.                 |
+| curriculum exam                  | 97.1%                            | 97.1%                           |
+
+Ask "what did you learn?" to hear about its last session. **Long-press 🧠** to send it back to the
+brain it shipped with (your notes, list and taught answers are kept).
 
 About signing: the app is signed with a public debug key (`android/app/morpheus-debug.keystore`),
 so new versions install over old ones and keep your notes. Because the key is public, only install

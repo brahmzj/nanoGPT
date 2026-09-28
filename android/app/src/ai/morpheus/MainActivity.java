@@ -1,6 +1,8 @@
 package ai.morpheus;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -43,15 +45,20 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /** Morpheus on Android: a chat screen, the brain from assets/brain.bin, and the phone as its hands. */
-public class MainActivity extends Activity implements Assistant.Platform {
+public class MainActivity extends Activity {
 
     static final int NIGHT = Color.rgb(15, 11, 30), CARD = Color.rgb(30, 24, 56), LAVENDER = Color.rgb(237, 233, 254);
     static final int VIOLET = Color.rgb(109, 40, 217), DIM = Color.rgb(148, 140, 180), FIELD = Color.rgb(38, 31, 70);
+    static final int VIOLET_LIGHT = Color.rgb(196, 181, 253);
     static final int VOICE = 7;
 
     final ExecutorService worker = Executors.newSingleThreadExecutor();
     SharedPreferences prefs;
-    Assistant assistant;
+    Phone phone;
+    volatile Assistant assistant;
+    volatile Brain brainInUse;
+    volatile boolean learning;
+    TextView status;
     LinearLayout messages;
     ScrollView scroll;
     EditText input;
@@ -65,6 +72,7 @@ public class MainActivity extends Activity implements Assistant.Platform {
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs = getSharedPreferences("morpheus", MODE_PRIVATE);
+        phone = new Phone(this);
         speakReplies = prefs.getBoolean("speak", false);
         getWindow().setStatusBarColor(NIGHT);
         getWindow().setNavigationBarColor(NIGHT);
@@ -80,6 +88,8 @@ public class MainActivity extends Activity implements Assistant.Platform {
         TextView title = text("☾ Morpheus", 22, LAVENDER);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        Button brainButton = iconButton("🧠");
+        header.addView(brainButton);
         globe = iconButton("🌐");
         speaker = iconButton("🔊");
         Button reset = iconButton("↺");
@@ -89,8 +99,11 @@ public class MainActivity extends Activity implements Assistant.Platform {
         root.addView(header);
 
         TextView subtitle = text("a tiny mind that grew up from abc and 123 · all on your phone", 13, DIM);
-        subtitle.setPadding(dp(18), 0, dp(18), dp(10));
+        subtitle.setPadding(dp(18), 0, dp(18), dp(4));
         root.addView(subtitle);
+        status = text("", 12, VIOLET_LIGHT);
+        status.setPadding(dp(18), 0, dp(18), dp(8));
+        root.addView(status);
 
         scroll = new ScrollView(this);
         messages = new LinearLayout(this);
@@ -134,9 +147,15 @@ public class MainActivity extends Activity implements Assistant.Platform {
                 bubble("(conversation forgotten. your notes and list are kept.)", false);
             }
         });
+        brainButton.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { learnNow(); }
+        });
+        brainButton.setOnLongClickListener(new View.OnLongClickListener() {
+            public boolean onLongClick(View v) { askToUnlearn(); return true; }
+        });
         globe.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                boolean on = !internetAllowed();
+                boolean on = !phone.internetAllowed();
                 prefs.edit().putBoolean("internet", on).apply();
                 showToggles();
                 toast(on ? "internet look-ups allowed" : "internet off: everything stays on your phone");
@@ -163,17 +182,18 @@ public class MainActivity extends Activity implements Assistant.Platform {
         showToggles();
 
         bubble("hello! i am morpheus. i learned from abc and 123. ask me about letters, numbers, "
-               + "words or math, or say help. 🎤 lets you talk to me.", false);
+               + "words or math, or say help. 🎤 lets you talk to me. i keep learning while your phone "
+               + "charges, and 🧠 makes me study right now.", false);
         tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
             public void onInit(int status) { }
         });
+        handleShare(getIntent());
+        Mind.schedule(this);
         worker.execute(new Runnable() {
             public void run() {
                 try {
-                    InputStream in = getAssets().open("brain.bin");
-                    final Brain brain = new Brain(in);
-                    in.close();
-                    assistant = new Assistant(brain, MainActivity.this);
+                    brainInUse = Mind.brain(MainActivity.this);
+                    assistant = new Assistant(brainInUse, phone);
                 } catch (final Exception e) {
                     runOnUiThread(new Runnable() {
                         public void run() { bubble("(my brain would not load: " + e + ")", false); }
@@ -181,6 +201,102 @@ public class MainActivity extends Activity implements Assistant.Platform {
                 }
             }
         });
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleShare(intent);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        worker.execute(new Runnable() {  // did it study while we were away?
+            public void run() {
+                try {
+                    if (brainInUse != null && !learning && Mind.grewSince(MainActivity.this, brainInUse)) {
+                        brainInUse = Mind.brain(MainActivity.this);
+                        assistant = new Assistant(brainInUse, phone);
+                        List<String> sessions = phone.readList("sessions");
+                        final String last = sessions.isEmpty() ? "" : sessions.get(sessions.size() - 1);
+                        runOnUiThread(new Runnable() {
+                            public void run() { bubble("(while you were away, i studied. " + last + ")", false); }
+                        });
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        });
+    }
+
+    void handleShare(Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return;
+        String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+        if (text == null || text.trim().isEmpty()) return;
+        intent.setAction(Intent.ACTION_MAIN);  // handle each share once
+        bubble("(shared" + (subject != null ? ": " + subject : "") + ")", true);
+        bubble(phone.share((subject != null && !text.startsWith("http") ? subject + "\n" : "") + text), false);
+    }
+
+    void learnNow() {
+        if (learning) { toast("i am already studying"); return; }
+        learning = true;
+        status.setText("🧠 getting ready to study… (you can keep talking to me)");
+        new Thread(new Runnable() {
+            public void run() {
+                String message;
+                try {
+                    Learner.Result r = Mind.learn(MainActivity.this, phone, new Learner.Progress() {
+                        public void update(final String m) {
+                            runOnUiThread(new Runnable() { public void run() { status.setText("🧠 " + m); } });
+                        }
+                        public boolean cancelled() { return isFinishing(); }
+                    }, 8 * 60 * 1000L);
+                    message = r.summary;
+                    if (r.kept) {
+                        brainInUse = Mind.brain(MainActivity.this);
+                        assistant = new Assistant(brainInUse, phone);
+                    }
+                } catch (Throwable e) {
+                    message = "(i could not study: " + e + ")";
+                }
+                final String done = message;
+                learning = false;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        status.setText("");
+                        bubble(done, false);
+                        if (speakReplies) say(done);
+                    }
+                });
+            }
+        }, "morpheus-learn-now").start();
+    }
+
+    void askToUnlearn() {
+        new AlertDialog.Builder(this)
+            .setTitle("Go back to the original brain?")
+            .setMessage("Morpheus forgets what it learned on this phone. Your notes, list and taught answers are kept.")
+            .setPositiveButton("Go back", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface d, int which) {
+                    worker.execute(new Runnable() {
+                        public void run() {
+                            try {
+                                Mind.unlearn(MainActivity.this);
+                                brainInUse = Mind.brain(MainActivity.this);
+                                assistant = new Assistant(brainInUse, phone);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    });
+                    bubble("(back to the brain i shipped with.)", false);
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     @Override
@@ -201,6 +317,10 @@ public class MainActivity extends Activity implements Assistant.Platform {
                 final boolean unknown;
                 if (assistant == null) {
                     reply = "(still waking up, try again in a moment)";
+                    unknown = false;
+                } else if (message.equals("/learn")) {
+                    runOnUiThread(new Runnable() { public void run() { learnNow(); } });
+                    reply = "ok, i will study now.";
                     unknown = false;
                 } else if (message.startsWith("/teach")) {
                     reply = teach(message.substring(6));
@@ -295,7 +415,7 @@ public class MainActivity extends Activity implements Assistant.Platform {
     }
 
     void showToggles() {
-        globe.setAlpha(internetAllowed() ? 1f : 0.35f);
+        globe.setAlpha(phone.internetAllowed() ? 1f : 0.35f);
         speaker.setText(speakReplies ? "🔊" : "🔈");
         speaker.setAlpha(speakReplies ? 1f : 0.5f);
     }
@@ -328,113 +448,4 @@ public class MainActivity extends Activity implements Assistant.Platform {
 
     void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
-    // ------------------------------------------------------------------ the phone as Morpheus' hands
-
-    public long now() { return System.currentTimeMillis(); }
-
-    public List<String> readList(String name) {
-        List<String> out = new ArrayList<>();
-        try {
-            JSONArray a = new JSONArray(prefs.getString("list_" + name, "[]"));
-            for (int i = 0; i < a.length(); i++) out.add(a.getString(i));
-        } catch (Exception ignored) {
-        }
-        return out;
-    }
-
-    public void writeList(String name, List<String> items) {
-        prefs.edit().putString("list_" + name, new JSONArray(items).toString()).apply();
-    }
-
-    public boolean setAlarm(int hour, int minute, String message) {
-        final Intent i = new Intent(AlarmClock.ACTION_SET_ALARM)
-            .putExtra(AlarmClock.EXTRA_HOUR, hour).putExtra(AlarmClock.EXTRA_MINUTES, minute)
-            .putExtra(AlarmClock.EXTRA_MESSAGE, message).putExtra(AlarmClock.EXTRA_SKIP_UI, true);
-        return start(i);
-    }
-
-    public boolean setTimer(int seconds, String message) {
-        final Intent i = new Intent(AlarmClock.ACTION_SET_TIMER)
-            .putExtra(AlarmClock.EXTRA_LENGTH, Math.max(1, Math.min(seconds, 86400)))
-            .putExtra(AlarmClock.EXTRA_MESSAGE, message).putExtra(AlarmClock.EXTRA_SKIP_UI, true);
-        return start(i);
-    }
-
-    public boolean openUrl(String url) {
-        return start(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-    }
-
-    public int[] battery() {
-        BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
-        if (bm == null) return null;
-        int percent = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-        if (percent <= 0) return null;
-        return new int[]{percent, bm.isCharging() ? 1 : 0};
-    }
-
-    public boolean internetAllowed() { return prefs.getBoolean("internet", false); }
-
-    public String[] lookup(String topic) {
-        try {
-            String base = "https://simple.wikipedia.org";
-            JSONArray hits = new JSONArray(get(base + "/w/api.php?action=opensearch&format=json&limit=1&search="
-                                               + URLEncoder.encode(topic, "UTF-8")));
-            if (hits.getJSONArray(1).length() == 0) return null;
-            String title = hits.getJSONArray(1).getString(0);
-            JSONObject page = new JSONObject(get(base + "/api/rest_v1/page/summary/"
-                                                 + URLEncoder.encode(title.replace(' ', '_'), "UTF-8")));
-            String extract = page.optString("extract", "");
-            return extract.isEmpty() ? null : new String[]{page.optString("title", title), extract};
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    static String get(String url) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(10000);
-        c.setReadTimeout(10000);
-        c.setRequestProperty("User-Agent", "Morpheus-Android/1.0 (tiny personal assistant)");
-        try (InputStream in = c.getInputStream()) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
-            return out.toString("UTF-8");
-        } finally {
-            c.disconnect();
-        }
-    }
-
-    /** Start an activity from any thread; true if the phone had an app to handle it. */
-    boolean start(final Intent intent) {
-        return onUi(new Callable<Boolean>() {
-            public Boolean call() {
-                try {
-                    startActivity(intent);
-                    return true;
-                } catch (ActivityNotFoundException | SecurityException e) {
-                    return false;
-                }
-            }
-        });
-    }
-
-    boolean onUi(final Callable<Boolean> job) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            try { return job.call(); } catch (Exception e) { return false; }
-        }
-        final boolean[] result = {false};
-        final CountDownLatch done = new CountDownLatch(1);
-        runOnUiThread(new Runnable() {
-            public void run() {
-                try { result[0] = job.call(); } catch (Exception ignored) { }
-                done.countDown();
-            }
-        });
-        try {
-            done.await(5, TimeUnit.SECONDS);
-        } catch (InterruptedException ignored) {
-        }
-        return result[0];
-    }
 }

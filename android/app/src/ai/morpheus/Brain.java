@@ -30,7 +30,19 @@ public final class Brain {
     final int vocab, block, nLayer, nLoop, nHead, nKv, nEmbd, hd, hidden;
     final float ropeBase;
     final Map<String, float[]> w = new HashMap<>();  // row-major (out, in), like torch
+    final Map<String, String> scheme = new HashMap<>();  // how each tensor is stored: ternary, int8, ...
+    final Map<String, int[]> shape = new HashMap<>();    // {rows, cols}
     final float[][] cos, sin;
+
+    /** The same mind with different weights: what a learning session produces. */
+    public Brain(Brain like, Map<String, float[]> weights) {
+        vocab = like.vocab; block = like.block; nLayer = like.nLayer; nLoop = like.nLoop; nHead = like.nHead;
+        nKv = like.nKv; nEmbd = like.nEmbd; hd = like.hd; hidden = like.hidden; ropeBase = like.ropeBase;
+        cos = like.cos; sin = like.sin;
+        scheme.putAll(like.scheme);
+        shape.putAll(like.shape);
+        w.putAll(weights);
+    }
 
     public Brain(InputStream in) throws IOException {
         byte[] data = readAll(in);
@@ -62,6 +74,8 @@ public final class Brain {
                 int rows = Integer.parseInt(p[3]), cols = Integer.parseInt(p[4]), pad = Integer.parseInt(p[5]);
                 int offset = Integer.parseInt(p[6]), size = Integer.parseInt(p[7]);
                 w.put(name, dequantize(data, headerEnd + offset, size, q, rows, cols, pad));
+                scheme.put(name, q);
+                shape.put(name, new int[]{rows, cols});
             }
         }
         // rotary tables, computed in float32 like numpy
