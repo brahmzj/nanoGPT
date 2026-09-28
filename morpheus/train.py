@@ -198,8 +198,9 @@ def squeeze(args):
     A copy of the brain (the student) sees only its quantized weights in every forward pass,
     while updates go to the float weights underneath (straight-through estimator). It studies
     the whole curriculum, learning both from the lessons and from its own full-precision self
-    (the teacher). Exams are sat by the *compressed* student, and it stops as soon as it is back
-    within `tolerance` of the teacher (mastery gating, again, to save energy).
+    (the teacher). Exams are sat by the *compressed* student. Once the average of its last two
+    exams is back within `tolerance` of the teacher (or the study budget runs out), it dreams:
+    `anneal` more steps while the learning rate fades to zero, which consolidates what it learned.
     """
     import copy
     import torch.nn as nn
@@ -240,11 +241,20 @@ def squeeze(args):
 
     optimizer = student.configure_optimizer(args.lr, args.weight_decay, (0.9, 0.99), device_type)
     classroom = Classroom(stages, cfg.block_size, args.batch_size, seed=args.seed)
-    best, best_state, t0 = start_score, copy.deepcopy(student.state_dict()), time.time()
+    t0, recent, dream_from = time.time(), [], None
     T, alpha = 1.0, args.distill
-    for step in range(1, args.steps + 1):
-        progress = step / args.steps
-        lr = args.lr * min(1.0, step / args.warmup) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
+    step = 0
+    while True:
+        step += 1
+        if dream_from is None and step > args.steps - args.anneal:
+            dream_from = step  # out of study budget: consolidate what is there
+            print(f"  study budget used: dreaming for {args.anneal} steps")
+        if dream_from is not None and step >= dream_from + args.anneal:
+            break
+        if dream_from is None:
+            lr = args.lr * min(1.0, step / args.warmup)
+        else:
+            lr = args.lr * 0.5 * (1 + math.cos(math.pi * (step - dream_from) / args.anneal))
         for group in optimizer.param_groups:
             group["lr"] = lr
         data = torch.from_numpy(classroom.rows(None)).to(device)
@@ -266,16 +276,15 @@ def squeeze(args):
         if step % args.log_every == 0:
             print(f"  step {step:5d}  loss {loss.item():.4f} (lessons {ce.item():.4f})  lr {lr:.2e}  "
                   f"{(time.time() - t0) / step * 1000:.0f}ms/step")
-        if step % args.eval_every == 0 or step == args.steps:
+        if dream_from is None and step % args.eval_every == 0:
             now, rows = score(predict_s, 1000 + step)
+            recent = (recent + [now])[-2:]
             print(f"  exam after {step} steps: {now * 100:.1f}%  (" +
                   " ".join(f"{n} {s * 100:.0f}" for n, s, _ in rows) + ")")
-            if now > best:
-                best, best_state = now, copy.deepcopy(student.state_dict())
-            if now >= target:
-                print(f"  back within {args.tolerance * 100:.1f} points of the teacher: done")
-                break
-    student.load_state_dict(best_state)
+            if len(recent) == 2 and sum(recent) / 2 >= target:  # two exams, not one lucky one
+                dream_from = step + 1
+                print(f"  back within {args.tolerance * 100:.1f} points of the teacher: "
+                      f"dreaming for {args.anneal} steps")
     for module in student.modules():  # keep the float weights underneath; export rounds them the same way
         if parametrize.is_parametrized(module, "weight"):
             parametrize.remove_parametrizations(module, "weight", leave_parametrized=False)

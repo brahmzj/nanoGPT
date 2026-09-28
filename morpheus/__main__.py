@@ -240,6 +240,9 @@ def cmd_export(args):
     from .compress import export, load
     from .train import load_model
     model, _ = load_model(args.ckpt)
+    if args.scheme in ("int3", "ternary", "binary"):
+        print(f"note: rounding a float brain straight to {args.scheme} badly damages it (ternary: ~98% -> ~3%).\n"
+              f"      use:  python -m morpheus squeeze --ckpt {args.ckpt} --scheme {args.scheme}")
     out = args.out or os.path.splitext(args.ckpt)[0] + ("" if args.scheme == "int8" else f"-{args.scheme}") + ".morph"
     nbytes = export(model, out, scheme=args.scheme)
     fp32 = model.num_params() * 4
@@ -267,9 +270,11 @@ def cmd_stats(args):
           f"width {cfg.n_embd} | {cfg.n_head} heads ({cfg.n_kv_head} kv) | context {cfg.block_size}")
     print(f"  compute: {ours / 1e6:.2f} MFLOP per character (at context 64), "
           f"~{gpt2_flops / ours:.0f}x less than GPT-2 small per token")
-    print("  brain size before LZMA:  " + "   ".join(
+    print("  brain file size:  " + "   ".join(
         f"{name} {n * bits / 8 / 1024:.0f} KB" for name, bits in
-        (("f32", 32), ("f16", 16), ("int8", 8 + 16 / cfg.n_embd), ("int4", 4 + 16 / 32))))
+        (("f32", 32), ("f16", 16), ("int8", 8 + 16 / cfg.n_embd), ("int4", 4 + 16 / 32),
+         ("int3", 2.5 + 16 / 32), ("ternary", 1.6 + 16 / cfg.n_embd), ("binary", 1 + 16 / cfg.n_embd))))
+    print("  below int4, squeeze the brain (python -m morpheus squeeze) so it learns through the rounding")
 
 
 def main(argv=None):
@@ -348,6 +353,7 @@ def main(argv=None):
     q.add_argument("--distill", type=float, default=0.5, help="weight of learning from the float teacher (0..1)")
     q.add_argument("--tolerance", type=float, default=0.01, help="stop within this of the teacher's exam score")
     q.add_argument("--eval_every", type=int, default=250)
+    q.add_argument("--anneal", type=int, default=500, help="final dreaming steps with a fading learning rate")
     q.add_argument("--exam_size", type=int, default=100, help="questions per stage")
     q.add_argument("--log_every", type=int, default=50)
     q.add_argument("--watts", type=float, default=25.0)

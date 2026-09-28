@@ -114,7 +114,7 @@ class TestCompressedLearning(unittest.TestCase):
             torch.save({"config": config_dict(m.cfg), "model": m.state_dict()}, ckpt)
             args = argparse.Namespace(ckpt=ckpt, scheme="ternary", embed_scheme="int8", out="", steps=4, lr=1e-3,
                                       warmup=2, weight_decay=0.0, grad_clip=1.0, batch_size=2, distill=0.5,
-                                      tolerance=0.01, eval_every=2, exam_size=2, log_every=2, watts=25.0,
+                                      tolerance=0.01, eval_every=2, anneal=2, exam_size=2, log_every=2, watts=25.0,
                                       device="cpu", threads=1, seed=0)
             with open(os.devnull, "w") as null, contextlib.redirect_stdout(null):
                 out = squeeze(args)
