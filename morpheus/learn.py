@@ -18,8 +18,9 @@ A learning session (`python -m morpheus learn`):
   2. reads new files from the inbox folders and, only if allowed, fetches from the internet
   3. sits a baseline exam on the whole ABC-to-talk curriculum
   4. studies: new reading + your taught facts + review of the curriculum (so nothing is forgotten)
-  5. sits the exam again and keeps the new brain only if it did not forget more than
-     `max_forgetting`. Otherwise the session is rolled back: Morpheus never gets worse.
+  5. sits the exam again and keeps the new brain only if it lost at most `max_forgetting`
+     against both the last brain and the very first one (so losses can not pile up).
+     Otherwise the session is rolled back: Morpheus never drifts downhill.
 
 Only numpy is needed (see grad.py), so this runs in Termux on Android.
 """
@@ -62,8 +63,8 @@ DEFAULT_SETTINGS = {
     "batch_size": 8,
     "lr": 3e-4,
     "mix": {"curriculum": 0.5, "library": 0.3, "taught": 0.2},
-    "max_forgetting": 0.03,           # max drop in exam score a session may cost
-    "exam_questions": 40,             # per curriculum stage
+    "max_forgetting": 0.02,           # max drop in exam score, vs the last AND the original brain
+    "exam_questions": 60,             # per curriculum stage
     "lowercase": True,                # Morpheus grew up lowercase
     "library_chars": 3_000_000,       # most recent reading kept in play
 }
@@ -364,15 +365,17 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
 
     # what to study: curriculum review + new reading + taught facts
     stages, weights = list(STAGES), [s["mix"]["curriculum"] / len(STAGES)] * len(STAGES)
+    # new material gets study time in proportion to how much of it there is, so one short
+    # file (or one taught fact) is learned without crowding out everything else
     reading = home.library_text()
     if reading:
         stages.append(Library(reading))
-        weights.append(s["mix"]["library"])
+        weights.append(s["mix"]["library"] * min(1.0, len(reading) / 20_000))
     facts = home.taught()
     taught = taught_stage(facts) if facts else None
     if taught:
         stages.append(taught)
-        weights.append(s["mix"]["taught"])
+        weights.append(s["mix"]["taught"] * min(1.0, 0.1 + len(facts) / 10))
     exam_seed = 4242  # the same questions before and after, so the comparison is fair
     before = report_card(trainer.predict, STAGES + ([taught] if taught else []), block,
                          n=s["exam_questions"], seed=exam_seed)
@@ -394,7 +397,10 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
                         n=s["exam_questions"], seed=exam_seed)
     curriculum_before = average([r for r in before if r[0] != "taught"])
     curriculum_after = average([r for r in after if r[0] != "taught"])
-    kept = curriculum_after >= curriculum_before - s["max_forgetting"]
+    # the first score ever measured is the floor: small losses can not pile up session after session
+    original = home.journal.setdefault("original_exam", curriculum_before)
+    floor = min(curriculum_before, original) - s["max_forgetting"]
+    kept = curriculum_after >= floor
     summary = {
         "when": time.strftime("%Y-%m-%d %H:%M"), "steps": steps, "new_sources": new,
         "loss": round(float(np.mean(losses[-25:])), 4), "seconds": round(time.time() - started, 1),
@@ -413,7 +419,7 @@ def session(home, steps=None, force=False, online=None, seed=None, log=print):
                if taught else ""))
     else:
         log(f"rolled back: the exam fell from {curriculum_before * 100:.1f}% to {curriculum_after * 100:.1f}% "
-            f"(more than the allowed {s['max_forgetting'] * 100:.0f} points). The old brain stays.")
+            f"(below the allowed {floor * 100:.1f}%). The old brain stays.")
     home.journal["sessions"].append(summary)
     home.save_journal()
     return summary

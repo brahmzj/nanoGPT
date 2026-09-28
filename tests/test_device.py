@@ -254,6 +254,15 @@ class TestAssistant(unittest.TestCase):
         self.assertEqual(self.a.respond("1234 * 5678"), "1234 x 5678 = 7006652.")
         self.assertEqual(self.a.respond("what is 7 divided by 0?"), "you can not divide by zero.")
 
+    def test_checked_comparisons_and_stories(self):
+        self.brain.answers["which is bigger, 73 or 37?"] = "the bigger of 73 and 37 is 77."
+        self.brain.answers["mia has 4 cookies and gets 3 more. how many cookies now?"] = "leo has 7 cookies."
+        self.assertEqual(self.a.respond("which is bigger, 73 or 37?"), "the bigger of 73 and 37 is 73.")
+        self.assertEqual(self.a.respond("mia has 4 cookies and gets 3 more. how many cookies now?"),
+                         "mia has 7 cookies.")
+        self.assertEqual(len(self.home.taught()), 2)
+        self.assertEqual(self.a.respond("15 minus 6"), "15 - 6 = 9.")
+
     def test_lookup_needs_permission(self):
         self.assertIn("allow the internet", self.a.respond("tell me about volcanoes"))
 

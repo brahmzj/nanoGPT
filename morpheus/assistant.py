@@ -10,8 +10,8 @@ the internet is allowed) and study the answer in its next learning session.
   notes      "remember that my locker code is 1234"  /  "what is my locker code?"  /  "forget ..."
   to-do      "add milk to my list"  /  "what is on my list?"  /  "remove milk from my list"
   reminders  "remind me to call mom at 5pm"  /  "set a timer for 10 minutes"  /  "set an alarm for 7:30 am"
-  math       any arithmetic; the brain answers first and a calculator checks it. Mistakes on
-             small numbers become lessons for the next learning session
+  checked    arithmetic, "which is bigger, 73 or 37?", story problems: the brain answers first
+             and a tool checks it. Mistakes it could learn become lessons for the next session
   clock      "what time is it?"  /  "what is the date?"
   battery    "how much battery do i have?"
   look up    "look up volcanoes" / "tell me about the moon" (Simple English Wikipedia, if allowed)
@@ -267,8 +267,10 @@ class Assistant:
                 if reply is not None:
                     self.chat.record(text, reply)
                     break
-        if reply is None and parse_math(text):
-            reply = self.skill_math(text)
+        if reply is None:
+            checked = self.check(text)
+            if checked:
+                reply = self.skill_checked(text, *checked)
         if reply is None:
             reply = self.chat.ask(text)
             if reply == UNKNOWN_ANSWER:
@@ -442,27 +444,43 @@ class Assistant:
             self.home.write_list("reminders.json", [r for r in reminders if r["due"] > now])
         return [f"(reminder: {second_person(r['what'])})" for r in due if r["what"] not in ("timer", "alarm")]
 
-    # math ----------------------------------------------------------
+    # checked answers: the brain answers, a tool checks ----------------
 
-    def skill_math(self, text):
-        expr = parse_math(text)
-        try:
-            value = safe_eval(expr)
-        except ZeroDivisionError:
-            return "you can not divide by zero."
-        except Exception:
-            return None
-        correct = f"{pretty(expr)} = {fmt_number(value)}."
+    def skill_checked(self, text, correct, same, learnable):
         attempt = self.chat.ask(text)  # the brain tries first...
-        said = re.findall(r"-?\d+(?:\.\d+)?", attempt)
-        if said and said[-1] == fmt_number(value):
+        if same(attempt, correct):
             return attempt
-        # ...and a calculator checks it. Small sums it got wrong become lessons.
-        numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", expr)]
-        if numbers and max(numbers) <= 100 and len(numbers) == 2 and float(value).is_integer():
+        if learnable:  # ...a tool checks it, and mistakes it could learn become lessons
             self.home.teach(text, correct)
         self.chat.record(text, correct)
         return correct
+
+    def check(self, text):
+        """The exact answer to a question a tool can verify, or None."""
+        m = re.match(r"^which is (?P<w>bigger|larger|greater|smaller|less), (?P<a>-?\d+) or (?P<b>-?\d+)\??$", text)
+        if m:
+            a, b = int(m.group("a")), int(m.group("b"))
+            word = "bigger" if m.group("w") in ("bigger", "larger", "greater") else "smaller"
+            value = max(a, b) if word == "bigger" else min(a, b)
+            return f"the {word} of {a} and {b} is {value}.", str.__eq__, max(abs(a), abs(b)) <= 100
+        m = re.match(r"^(?P<name>[a-z]+) has (?P<a>\d+) (?P<item>[a-z]+) and gets (?P<b>\d+) more\. "
+                     r"how many (?P<items>[a-z]+) now\??$", text)
+        if m:
+            total = int(m.group("a")) + int(m.group("b"))
+            item = m.group("items") if total != 1 else m.group("item")
+            return f"{m.group('name')} has {total} {item}.", str.__eq__, total <= 40
+        expr = parse_math(text)
+        if expr:
+            try:
+                value = safe_eval(expr)
+            except ZeroDivisionError:
+                return "you can not divide by zero.", str.__eq__, False
+            except Exception:
+                return None
+            numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", expr)]
+            learnable = len(numbers) == 2 and max(numbers) <= 100 and float(value).is_integer()
+            return f"{pretty(expr)} = {fmt_number(value)}.", same_number, learnable
+        return None
 
     # the outside world -----------------------------------------------
 
@@ -487,6 +505,12 @@ class Assistant:
             self.home.teach(text, answer)
         self.home.save_journal()
         return answer
+
+
+def same_number(attempt, correct):
+    """'15 minus 6 is 9.' and '15 - 6 = 9.' agree: both end in the same number."""
+    said, want = re.findall(r"-?\d+(?:\.\d+)?", attempt), re.findall(r"-?\d+(?:\.\d+)?", correct)
+    return bool(said) and said[-1] == want[-1]
 
 
 def fmt_duration(seconds):

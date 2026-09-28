@@ -18,6 +18,7 @@ Growing on a device (numpy only, e.g. Termux on Android):
 import argparse
 import os
 import sys
+import time
 
 from . import tokenizer
 from .curriculum import UNKNOWN_ANSWER
@@ -173,7 +174,9 @@ def cmd_learn(args):
     home = Home(args.home)
     log = (lambda *a, **k: None) if args.quiet else print
     summary = session(home, steps=args.steps, force=args.force, online=True if args.online else None, log=log)
-    if args.quiet and "skipped" not in summary:
+    if args.quiet and "skipped" in summary:
+        print(f"{time.strftime('%Y-%m-%d %H:%M')} skipped: {summary['skipped']}")
+    elif args.quiet:
         verdict = "kept" if summary["kept"] else "rolled back"
         print(f"{summary['when']} {verdict}: exam {summary['exam_before'] * 100:.1f}% -> "
               f"{summary['exam_after'] * 100:.1f}%, {summary['new_sources']} new source(s), {summary['seconds']}s")

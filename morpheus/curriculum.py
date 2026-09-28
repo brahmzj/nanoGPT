@@ -152,10 +152,41 @@ SPELLING_WORDS = sorted(
 )
 SPELLING_WORDS = [w for w in SPELLING_WORDS if " " not in w]
 WORD_CATEGORY = {w: cat for cat, words in CATEGORIES.items() for w in words}
+KNOWN_WORDS = (set(SPELLING_WORDS) | set(NAMES) | set(ONES) | set(TENS) | set(MONTHS) | set(SEASONS)
+               | {w for phrase in ADJECTIVES + VERBS + PLACES for w in phrase.split()}
+               | {"a", "an", "the", "is", "are", "has", "one", "two", "big", "little", "after", "before"})
 
 
 def spell(word):
     return " ".join(word)
+
+
+CONSONANTS = "bcdfghjklmnprstvwz"
+VOWELS = "aeiou"
+
+
+def pseudo_word(rng, lo=2, hi=8):
+    """A made-up word ('zobek', 'tiram'). Spelling and copying these forces Morpheus to learn
+    *how* to spell or copy any word, instead of memorizing the ones it was shown."""
+    while True:
+        n = rng.randint(lo, hi)
+        if rng.random() < 0.2:
+            word = "".join(pick(rng, LETTERS) for _ in range(n))
+        else:
+            first = rng.random() < 0.5
+            word = "".join(pick(rng, VOWELS if (i % 2 == 0) == first else CONSONANTS) for i in range(n))
+        runs = any(abs(ord(a) - ord(b)) == 1 and ord(b) - ord(a) == ord(c) - ord(b)
+                   for a, b, c in zip(word, word[1:], word[2:]))
+        if word not in KNOWN_WORDS and not runs:  # "n o p e" would look like the alphabet "n o p"
+            return word
+
+
+def any_word(rng):
+    return pseudo_word(rng) if rng.random() < 0.4 else pick(rng, SPELLING_WORDS)
+
+
+def a_name(rng):
+    return pick(rng, NAMES) if rng.random() < 0.7 else pseudo_word(rng, 3, 5)
 
 
 # ----------------------------------------------------------------------------
@@ -304,12 +335,12 @@ def double_half(rng):
 
 
 def spelled(rng):
-    w = pick(rng, SPELLING_WORDS)
+    w = any_word(rng)
     return f"{w} is spelled ", spell(w), ""
 
 
 def spells(rng):
-    w = pick(rng, SPELLING_WORDS)
+    w = any_word(rng)
     return f"{spell(w)} spells ", w, ""
 
 
@@ -406,14 +437,14 @@ def world_fact(rng):
 
 
 def story_add(rng):
-    name, item = pick(rng, NAMES), pick(rng, ITEMS)
+    name, item = a_name(rng), pick(rng, ITEMS)
     a, b = rng.randint(1, 10), rng.randint(1, 10)
     story = f"{name} has {amount(a, item)}. {name} gets {b} more. now {name} has "
     return story, amount(a + b, item) + ".", ""
 
 
 def story_sub(rng):
-    name, item = pick(rng, NAMES), pick(rng, ITEMS)
+    name, item = a_name(rng), pick(rng, ITEMS)
     a = rng.randint(2, 12)
     b = rng.randint(1, a)
     story = f"{name} has {amount(a, item)}. {name} gives away {b}. now {name} has "
@@ -535,7 +566,7 @@ def talk_math(rng):
 def talk_words(rng):
     kind = rng.randrange(8)
     if kind == 0:
-        w = pick(rng, SPELLING_WORDS)
+        w = any_word(rng)
         return qa(pick(rng, (f"how do you spell {w}?", f"spell {w}")), f"{w} is spelled {spell(w)}.", rng)
     if kind == 1:
         a = pick(rng, [a for a, (s, _) in ANIMALS.items() if s])
@@ -571,7 +602,7 @@ def talk_world(rng):
         subject, n, unit = pick(rng, WORLD_FACTS)
         return qa(f"how many {plural(unit)} does {subject} have?", f"{subject} has {amount(n, unit)}.", rng)
     if kind == 2:
-        name, item = pick(rng, NAMES), pick(rng, ITEMS)
+        name, item = a_name(rng), pick(rng, ITEMS)
         a, b = rng.randint(1, 10), rng.randint(1, 10)
         return qa(f"{name} has {amount(a, item)} and gets {b} more. how many {plural(item)} now?",
                   f"{name} has {amount(a + b, item)}.", rng)

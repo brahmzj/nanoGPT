@@ -12,3 +12,4 @@ env/
 venv/
 out-morpheus/
 *.morph
+!brains/*.morph
